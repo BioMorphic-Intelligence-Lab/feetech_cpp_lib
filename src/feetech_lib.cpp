@@ -184,6 +184,8 @@ int FeetechServo::sendMessage(byte const &servoId,
     message[2] = servoId;
     message[3] = paramLength + 2;
     message[4] = commandID;
+
+    // Todo implement message sending via boost (?)
     for (int i = 0; i < paramLength; i++)
     {
         message[5 + i] = parameters[i];
