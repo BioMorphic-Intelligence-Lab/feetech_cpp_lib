@@ -14,6 +14,8 @@
 #include <chrono>
 #include <thread>
 
+#include "feetech_ros2_driver/boost_timer.hpp"
+
 boost::system::error_code ec;
 
 
@@ -102,6 +104,10 @@ public:
     /// \param baud Baud rate, default 1Mbps
     /// \returns  True on success (at least one servo responds to ping)
     bool init(std::string port = "/dev/ttyUSB0", long const &baud = 1000000);
+
+    /// \brief Execute the servo driver loop (to be called in the timer)
+    /// \returns True on success
+    bool execute();
 
 
     /// \brief Ping servo
@@ -294,6 +300,8 @@ private:
     int writeCommand(const uint8_t *cmd, int cmd_length);
 
     boost::asio::serial_port* serial;
+
+    std::unique_ptr<BoostTimer> timer_;
 
     ServoType servoType_[256]; // Map of servo types - STS/SCS servos have slightly different protocol.
 };

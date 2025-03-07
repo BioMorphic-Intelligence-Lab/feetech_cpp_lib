@@ -4,6 +4,7 @@
 #define TICKS_PER_REVOLUTION 4096
 #define RADIANS_PER_TICK 0.00153398078 // 2 * pi / TICKS_PER_REVOLUTION
 #define DEGREES_PER_TICK 0.087890625 // 360 / TICKS_PER_REVOLUTION
+#define AMPERE_PER_TICK 0.0065
 
 namespace instruction
 {
@@ -20,7 +21,7 @@ FeetechServo::FeetechServo() : serial(nullptr)
 {
 }
 
-bool FeetechServo::init(std::string port="/dev/ttyUSB0", long const &baud = 1000000)
+bool FeetechServo::init(std::string port="/dev/ttyUSB0", long const &baud = 1000000, const double frequency)
 {
 // ToDo: Fix Serial Connection over USB
     /* Open the serial port for communication */
@@ -31,6 +32,8 @@ bool FeetechServo::init(std::string port="/dev/ttyUSB0", long const &baud = 1000
     this->serial->set_option(boost::asio::serial_port_base::parity(boost::asio::serial_port_base::parity::none));
     this->serial->set_option(boost::asio::serial_port_base::stop_bits(boost::asio::serial_port_base::stop_bits::one));
 
+    // Controller
+    timer_ = std::make_unique<BoostTimer>(frequency, std::bind(&FeetechServo::execute, this));
 
     for (int i = 0; i < 256; i++)
         servoType_[i] = ServoType::UNKNOWN;
@@ -39,6 +42,35 @@ bool FeetechServo::init(std::string port="/dev/ttyUSB0", long const &baud = 1000
     for (uint8_t i = 0x00; i < 0xFE; i++)
         if (ping(i))
             return true;
+    return false;
+}
+
+bool FeetechServo::execute()
+{
+    // Update current servo data
+    readAllServoData();
+
+
+
+}
+
+bool FeetechServo::readAllServoData();
+{
+    readAllPresentPositions();
+    readAllPresentVelocities();
+    readAllPresentTemperatures();
+    readAllPresentCurrents(); 
+}
+
+bool FeetechServo::close()
+{
+    if (this->serial != nullptr)
+    {
+        this->serial->close();
+        delete this->serial;
+        this->serial = nullptr;
+        return true;
+    }
     return false;
 }
 
@@ -104,7 +136,7 @@ bool FeetechServo::setPositionOffset(uint8_t const &servoId, int const &position
     return true;
 }
 
-int FeetechServo::getCurrentPosition(uint8_t const &servoId, UNITS unit)
+int FeetechServo::readCurrentPosition(uint8_t const &servoId, UNITS unit)
 {
     int position = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION);
     switch(unit)
@@ -117,6 +149,14 @@ int FeetechServo::getCurrentPosition(uint8_t const &servoId, UNITS unit)
         default:
             return position;
     }
+}
+
+int FeetechServo::readAllCurrentPositions()
+{
+    int previous_position;
+    // loop over servo
+    // for each servo
+    //      save the previous position (to enable wrapping)
 }
 
 int FeetechServo::getCurrentSpeed(uint8_t const &servoId, UNITS unit)
@@ -142,7 +182,7 @@ int FeetechServo::getCurrentTemperature(uint8_t const &servoId)
 float FeetechServo::getCurrentCurrent(uint8_t const &servoId)
 {
     int16_t current = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_CURRENT);
-    return current * 0.0065;
+    return current * 0.AMPERE_PER_TICK;
 }
 
 bool FeetechServo::isMoving(uint8_t const &servoId)
