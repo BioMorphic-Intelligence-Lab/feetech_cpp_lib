@@ -7,14 +7,10 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
-find_package(rclcpp REQUIRED)
-find_package(sensor_msgs REQUIRED)
-find_package(trajectory_msgs REQUIRED)
  
 # define a library target called feetech_cpp_lib
 add_library(feetech_cpp_lib src/feetech_lib.cpp)
-ament_target_dependencies(feetech_cpp_lib 
-    rclcpp sensor_msgs trajectory_msgs)
+ament_target_dependencies(feetech_cpp_lib)
 target_include_directories(feetech_cpp_lib PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/feetech_lib>
   $<INSTALL_INTERFACE:include>)
@@ -38,7 +34,7 @@ install(
 )
 
 ament_export_include_directories(include)
-ament_export_dependencies(rclcpp sensor_msgs trajectory_msgs)
+ament_export_dependencies(ament_cmake)
 ament_export_libraries(feetech_cpp_lib)
 
 ament_package()
