@@ -3,6 +3,7 @@
 
 #define TICKS_PER_REVOLUTION 4096
 #define RADIANS_PER_TICK 0.00153398078 // 2 * pi / TICKS_PER_REVOLUTION
+#define TICKS_PER_RADIAN 651.898646904 // TICKS_PER_REVOLUTION / 2 * pi
 #define RADIANS_PER_REVOLUTION 6.28318530718
 #define DEGREES_PER_TICK 0.087890625 // 360 / TICKS_PER_REVOLUTION
 #define AMPERE_PER_TICK 0.0065
@@ -57,8 +58,41 @@ bool FeetechServo::execute()
     // Update current servo data
     readAllServoData();
 
+    // Position mode
+    if (settings_.mode == STSMode::POSITION)
+    {
+        // Calculate rotational error on servo horn
+        double servo_rads_to_go;
+        double velocity_ref;
+        for (size_t i = 0; i < servoIds_.size(); ++i)
+        {
+            servo_rads_to_go = (referencePositions_[i] - currentPositions_[i])*gearRatios_[i];
 
+            velocity_ref = std::clamp(proportionalGains_[i]*servo_rads_to_go + derivativeGains_[i]*currentVelocities_[i], 
+                -settings_.max_speed, settings_.max_speed);
+            // Set target speed
 
+            if (abs(servo_rads_to_go)<settings_.position_tolerance)
+            {
+                // Stop servo
+                setTargetVelocity(servoIds_[i], 0, false);
+            }
+            else
+            {
+                // Set target velocity
+                setTargetVelocity(servoIds_[i], velocity_ref*gearRatios_[i], false);
+            }
+        }
+    }
+    // Velocity mode
+    else if (settings_.mode == STSMode::VELOCITY)
+    {
+        for (size_t i = 0; i < servoIds_.size(); ++i)
+        {
+            // Set target velocity
+            setTargetVelocity(servoIds_[i], referenceVelocities_[i], true);
+        }
+    }
 }
 
 bool FeetechServo::close()
@@ -90,27 +124,15 @@ bool FeetechServo::ping(uint8_t const &servoId)
     return response[0] == 0x00;
 }
 
-bool FeetechServo::setDriverSettings(int setting, int value)
+void FeetechServo::setDriverSettings(const DriverSettings& settings)
 {
-    switch(setting)
-    {
-        case 0:
-            return setTargetPosition(0xFE, value);
-        case 1:
-            return setTargetVelocity(0xFE, value);
-        case 2:
-            return setTargetAcceleration(0xFE, value);
-        case 3:
-            return setMode(0xFE, static_cast<STSMode>(value));
-        default:
-            return false;
-    }
+    settings_ = settings;
 }
 
 bool FeetechServo::readAllServoData()
 {
     readAllCurrentPositions();
-    readAllCurrentVelocities();
+    readAllCurrentSpeeds();
     readAllCurrentCurrents(); 
 }
 
@@ -266,7 +288,8 @@ bool FeetechServo::setTargetPosition(uint8_t const &servoId, int const &position
 
 bool FeetechServo::setTargetVelocity(uint8_t const &servoId, int const &velocity, bool const &asynchronous)
 {
-    return writeTwouint8_tsRegister(servoId, STSRegisters::RUNNING_SPEED, velocity, asynchronous);
+    int velocity_ticks = velocity * TICKS_PER_RADIAN;
+    return writeTwouint8_tsRegister(servoId, STSRegisters::RUNNING_SPEED, velocity_ticks, asynchronous);
 }
 
 bool FeetechServo::setTargetAcceleration(uint8_t const &servoId, uint8_t const &acceleration, bool const &asynchronous)

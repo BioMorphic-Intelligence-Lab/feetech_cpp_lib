@@ -100,6 +100,7 @@ struct DriverSettings
     double max_speed = 6.28319;
     int max_servos = 35;
     STSMode mode = STSMode::POSITION;
+    double position_tolerance = 0.01; // rad
 };
 
 /// \brief Driver for STS servos, using UART
@@ -144,6 +145,10 @@ public:
     /// \param[in] positionOffset new position offset
     /// \return True if servo could successfully change position offset
     bool setPositionOffset(uint8_t const &servoId, int const &positionOffset);
+    
+    /// @brief Set new driver settings.
+    /// @param settings 
+    void setDriverSettings(const DriverSettings& settings);
 
     /****************************************************************************************/
     /********************************* DATA GETTERS *****************************************/
@@ -340,6 +345,10 @@ private:
     
     // Servo data
     std::vector<uint8_t> servoIds_; // IDs of servos to control
+    std::vector<double> gearRatios_;
+    std::vector<double> proportionalGains_;
+    std::vector<double> derivativeGains_;
+    std::vector<double> integralGains_;
     std::unordered_map<int, size_t> idToIndex_; // Map of servo IDs to index in servoIds_
     std::vector<double> referencePositions_;
     std::vector<double> referenceVelocities_;
@@ -349,7 +358,7 @@ private:
     std::vector<double> currentTemperatures_;
     std::vector<double> currentCurrents_;
     std::vector<double> homePositions_;
-    std::vector<double> gearRatios_;
+
     std::vector<ServoType> servoType_; // Map of servo types - STS/SCS servos have slightly different protocol.
 
     DriverSettings settings_;
