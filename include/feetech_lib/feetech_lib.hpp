@@ -14,7 +14,7 @@
 #include <chrono>
 #include <thread>
 
-#include "feetech_ros2_driver/boost_timer.hpp"
+#include "feetech_lib/boost_timer.hpp"
 
 boost::system::error_code ec;
 
@@ -91,6 +91,17 @@ enum UNITS
     DEG = 2
 };
 
+struct DriverSettings
+{
+    std::string port = "/dev/ttyUSB0";
+    long baud = 1000000;
+    double frequency = 100;
+    UNITS unit = RAD;
+    double max_speed = 6.28319;
+    int max_servos = 35;
+    STSMode mode = STSMode::POSITION;
+};
+
 /// \brief Driver for STS servos, using UART
 class FeetechServo
 {
@@ -98,12 +109,14 @@ public:
     /// \brief Constructor.
     FeetechServo();
 
-    /// \brief Initialize the servo driver.
-    ///
+    /// \brief Initialize the servo driver. Call this directly after constructing the object.
     /// \param port port name, default /dev/ttyUSB0
     /// \param baud Baud rate, default 1Mbps
+    /// \param frequency Frequency of the servo driver loop
+    /// \param servoIds IDs of servos to control
     /// \returns  True on success (at least one servo responds to ping)
-    bool init(std::string port = "/dev/ttyUSB0", long const &baud = 1000000);
+    bool init(std::string port = "/dev/ttyUSB0", long const &baud = 1000000, const double frequency, 
+        const std::vector<uint8_t>& servoIds);
 
     /// \brief Execute the servo driver loop (to be called in the timer)
     /// \returns True on success
@@ -114,6 +127,10 @@ public:
     /// \param[in] servoId ID of the servo
     /// \return True if servo responded to ping
     bool ping(uint8_t const &servoId);
+
+    /// \brief Close the serial port
+    /// \return True on success
+    bool close();
 
     /// \brief Change the ID of a servo.
     /// \note If the desired ID is already taken, this function does nothing and returns false.
@@ -128,17 +145,30 @@ public:
     /// \return True if servo could successfully change position offset
     bool setPositionOffset(uint8_t const &servoId, int const &positionOffset);
 
+    /****************************************************************************************/
+    /********************************* DATA GETTERS *****************************************/
+    /****************************************************************************************/
+
+    /// @brief Get current position, speed, and current for all servos.
+    /// @return true on success, false on failure
+    bool readAllServoData();
+
+    bool readAllCurrentPositions();
+    bool readAllCurrentSpeeds();
+    bool readAllCurrentTemperatures();
+    bool readAllCurrentCurrents(); 
+
     /// \brief Get current servo position.
     /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
     /// \param[in] servoId ID of the servo
-    /// \return Position, in counts, rad, or deg. 0 on failure.
-    int getCurrentPosition(uint8_t const &servoId, UNITS unit = COUNTS);
+    /// \return Position, in rad. 0 on failure.
+    double readCurrentPosition(uint8_t const &servoId);
 
     /// \brief Get current servo speed.
     /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
     /// \param[in] servoId ID of the servo
-    /// \return Speed, in counts/s, deg/s or rad/s. 0 on failure.
-    int getCurrentSpeed(uint8_t const &servoId, UNITS unit = COUNTS);
+    /// \return Speed, in rad/s. 0 on failure.
+    double readCurrentSpeed(uint8_t const &servoId);
 
     /// \brief Get current servo temperature.
     /// \param[in] servoId ID of the servo
@@ -298,11 +328,30 @@ private:
     /// @param[in] cmd Command to write
     /// @return Number of uint8_ts written
     int writeCommand(const uint8_t *cmd, int cmd_length);
+    
+    /// @brief Wrap angle to 2pi
+    /// @param[in] angle_rad Angle in radians
+    /// @return Wrapped angle in radians
+    double wrap_to_2pi(double angle_rad);
 
     boost::asio::serial_port* serial;
 
     std::unique_ptr<BoostTimer> timer_;
+    
+    // Servo data
+    std::vector<uint8_t> servoIds_; // IDs of servos to control
+    std::unordered_map<int, size_t> idToIndex_; // Map of servo IDs to index in servoIds_
+    std::vector<double> referencePositions_;
+    std::vector<double> referenceVelocities_;
+    std::vector<double> referenceAccelerations_;
+    std::vector<double> currentPositions_;
+    std::vector<double> currentVelocities_;
+    std::vector<double> currentTemperatures_;
+    std::vector<double> currentCurrents_;
+    std::vector<double> homePositions_;
+    std::vector<double> gearRatios_;
+    std::vector<ServoType> servoType_; // Map of servo types - STS/SCS servos have slightly different protocol.
 
-    ServoType servoType_[256]; // Map of servo types - STS/SCS servos have slightly different protocol.
+    DriverSettings settings_;
 };
 #endif

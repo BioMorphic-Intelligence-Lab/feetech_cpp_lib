@@ -3,6 +3,7 @@
 
 #define TICKS_PER_REVOLUTION 4096
 #define RADIANS_PER_TICK 0.00153398078 // 2 * pi / TICKS_PER_REVOLUTION
+#define RADIANS_PER_REVOLUTION 6.28318530718
 #define DEGREES_PER_TICK 0.087890625 // 360 / TICKS_PER_REVOLUTION
 #define AMPERE_PER_TICK 0.0065
 
@@ -21,9 +22,16 @@ FeetechServo::FeetechServo() : serial(nullptr)
 {
 }
 
-bool FeetechServo::init(std::string port="/dev/ttyUSB0", long const &baud = 1000000, const double frequency)
+bool FeetechServo::init(std::string port="/dev/ttyUSB0", long const &baud = 1000000, const double frequency, 
+    const std::vector<uint8_t>& servo_ids)
 {
-// ToDo: Fix Serial Connection over USB
+    // Write servo IDs to member data structure
+    servoIds_ = servo_ids;
+    for (size_t i = 0; i < servoIds_.size(); ++i) {
+        idToIndex_[servoIds_[i]] = i;
+    }
+
+    // ToDo: Fix Serial Connection over USB
     /* Open the serial port for communication */
     boost::asio::io_service io;
     this->serial = new boost::asio::serial_port(io, port);
@@ -35,14 +43,13 @@ bool FeetechServo::init(std::string port="/dev/ttyUSB0", long const &baud = 1000
     // Controller
     timer_ = std::make_unique<BoostTimer>(frequency, std::bind(&FeetechServo::execute, this));
 
-    for (int i = 0; i < 256; i++)
-        servoType_[i] = ServoType::UNKNOWN;
-
     // Test that a servo is present.
     for (uint8_t i = 0x00; i < 0xFE; i++)
         if (ping(i))
             return true;
     return false;
+
+    // Set all servos to velocity mode and torque enable
 }
 
 bool FeetechServo::execute()
@@ -52,14 +59,6 @@ bool FeetechServo::execute()
 
 
 
-}
-
-bool FeetechServo::readAllServoData();
-{
-    readAllPresentPositions();
-    readAllPresentVelocities();
-    readAllPresentTemperatures();
-    readAllPresentCurrents(); 
 }
 
 bool FeetechServo::close()
@@ -90,6 +89,32 @@ bool FeetechServo::ping(uint8_t const &servoId)
         return false;
     return response[0] == 0x00;
 }
+
+bool FeetechServo::setDriverSettings(int setting, int value)
+{
+    switch(setting)
+    {
+        case 0:
+            return setTargetPosition(0xFE, value);
+        case 1:
+            return setTargetVelocity(0xFE, value);
+        case 2:
+            return setTargetAcceleration(0xFE, value);
+        case 3:
+            return setMode(0xFE, static_cast<STSMode>(value));
+        default:
+            return false;
+    }
+}
+
+bool FeetechServo::readAllServoData()
+{
+    readAllCurrentPositions();
+    readAllCurrentVelocities();
+    readAllCurrentCurrents(); 
+}
+
+
 
 bool FeetechServo::setId(uint8_t const &oldServoId, uint8_t const &newServoId)
 {
@@ -136,42 +161,80 @@ bool FeetechServo::setPositionOffset(uint8_t const &servoId, int const &position
     return true;
 }
 
-int FeetechServo::readCurrentPosition(uint8_t const &servoId, UNITS unit)
+double FeetechServo::readCurrentPosition(uint8_t const &servoId)
 {
-    int position = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION);
-    switch(unit)
+    // Calculate wrapped position at servo horn (in radians)
+    double previous_wrapped_position = wrap_to_2pi(currentPositions_[idToIndex_[servoId]]*gearRatios_[idToIndex_[servoId]]);
+    
+    // Get current position at servo horn in radianss
+    double position = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION)*RADIANS_PER_TICK;
+    if (position==0)
+        return 0;
+    double position_diff = position - previous_wrapped_position;
+    double change_rads;
+
+    if (position_diff > 5.5) // 5.5 is a threshold value over which we assume the servo has wrapped around
     {
-        case UNITS::RAD:
-            return position * RADIANS_PER_TICK;
-        case UNITS::DEG:
-            return position * DEGREES_PER_TICK;
-        case UNITS::COUNTS:
-        default:
-            return position;
+        change_rads = position_diff - RADIANS_PER_REVOLUTION;
     }
+    else if (position_diff < -5.5)
+    {
+        change_rads = position_diff + RADIANS_PER_REVOLUTION;
+    }
+    else
+    {
+        change_rads = position_diff;
+    }
+    
+    // Add change in position to previous absolute position and correct for gear ratio
+    currentPositions_[idToIndex_[servoId]] = (previous_wrapped_position + change_rads)/gearRatios_[idToIndex_[servoId]];
+    return currentPositions_[idToIndex_[servoId]];
 }
 
-int FeetechServo::readAllCurrentPositions()
+bool FeetechServo::readAllCurrentPositions()
 {
-    int previous_position;
-    // loop over servo
-    // for each servo
-    //      save the previous position (to enable wrapping)
+    bool ret = true;
+    double position;
+
+    // Loop over servo IDs and read current position
+    for (size_t i = 0; i < servoIds_.size(); ++i)
+    {
+        position = readCurrentPosition(servoIds_[i]);
+        // If 0 is returned, position is not read correctly, so return value of function becomes false
+        if (position == 0)
+            ret = false;
+    }
+    return ret;
 }
 
-int FeetechServo::getCurrentSpeed(uint8_t const &servoId, UNITS unit)
+double FeetechServo::readCurrentSpeed(uint8_t const &servoId)
 {
+    // Get velocity in counts/second
     int16_t velocity_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_SPEED);
-    switch(unit)
+
+    // If 0 is returned, velocity is not read correctly, return and keep old value
+    if (velocity_ticks == 0)
+        return 0;
+    
+    double velocity_rads = velocity_ticks*RADIANS_PER_TICK;
+    currentVelocities_[idToIndex_[servoId]] = velocity_rads;
+    return velocity_rads;
+}
+
+bool FeetechServo::readAllCurrentSpeeds()
+{
+    bool ret = true;
+    double velocity;
+
+    // Loop over servo IDs and read current speed
+    for (size_t i = 0; i < servoIds_.size(); ++i)
     {
-        case UNITS::RAD:
-            return velocity_ticks * RADIANS_PER_TICK;
-        case UNITS::DEG:
-            return velocity_ticks * DEGREES_PER_TICK;
-        case UNITS::COUNTS:
-        default:
-            return velocity_ticks;
+        velocity = readCurrentSpeed(servoIds_[i]);
+        // If 0 is returned, velocity is not read correctly, so return value of function becomes false
+        if (velocity == 0)
+            ret = false;
     }
+    return ret;
 }
 
 int FeetechServo::getCurrentTemperature(uint8_t const &servoId)
@@ -182,7 +245,7 @@ int FeetechServo::getCurrentTemperature(uint8_t const &servoId)
 float FeetechServo::getCurrentCurrent(uint8_t const &servoId)
 {
     int16_t current = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_CURRENT);
-    return current * 0.AMPERE_PER_TICK;
+    return current * AMPERE_PER_TICK;
 }
 
 bool FeetechServo::isMoving(uint8_t const &servoId)
@@ -462,4 +525,13 @@ int FeetechServo::writeCommand(const uint8_t *cmd, int cmd_length)
 {
     std::size_t ret = this->serial->write_some(boost::asio::buffer(cmd, cmd_length));
     return static_cast<int>(ret);
+}
+
+
+double FeetechServo::wrap_to_2pi(double angle_rad) {
+    const double TWO_PI = 2.0 * M_PI;
+    angle_rad = std::fmod(angle_rad, TWO_PI);
+    if (angle_rad < 0)
+        angle_rad += TWO_PI;
+    return angle_rad;
 }
