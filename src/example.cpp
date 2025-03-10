@@ -1,6 +1,6 @@
 #include "feetech_lib.hpp"
 
-void main()
+int main()
 {
     // Create a FeetechServo object
     FeetechServo servo;
@@ -25,4 +25,6 @@ void main()
 
         servo.setReferencePosition(servo_ids[0], new_position);
     }
+
+    return 1;
 }
