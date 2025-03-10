@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <chrono>
 #include <thread>
+#include <atomic>
 
 #include "feetech_lib/boost_timer.hpp"
 
@@ -178,12 +179,12 @@ public:
     /// \brief Get current servo temperature.
     /// \param[in] servoId ID of the servo
     /// \return Temperature, in degC. 0 on failure.
-    int getCurrentTemperature(uint8_t const &servoId);
+    int readCurrentTemperature(uint8_t const &servoId);
 
     /// \brief Get current servo current.
     /// \param[in] servoId ID of the servo
     /// \return Current, in A.
-    float getCurrentCurrent(uint8_t const &servoId);
+    float readCurrentCurrent(uint8_t const &servoId);
 
     /// \brief Check if the servo is moving
     /// \param[in] servoId ID of the servo
@@ -197,7 +198,7 @@ public:
     /// \param[in] speed speed of the servo.
     /// \param[in] asynchronous If set, write is asynchronous (ACTION must be send to activate)
     /// \return True on success, false otherwise.
-    bool setTargetPosition(uint8_t const &servoId, int const &position, int const &speed = 4095, bool const &asynchronous = false);
+    bool writeTargetPosition(uint8_t const &servoId, int const &position, int const &speed = 4095, bool const &asynchronous = false);
 
     /// \brief Set target servo velocity.
     /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
@@ -205,19 +206,19 @@ public:
     /// \param[in] velocity Target velocity, in counts/s.
     /// \param[in] asynchronous If set, write is asynchronous (ACTION must be send to activate)
     /// \return True on success, false otherwise.
-    bool setTargetVelocity(uint8_t const &servoId, int const &velocity, bool const &asynchronous = false);
+    bool writeTargetVelocity(uint8_t const &servoId, int const &velocity, bool const &asynchronous = false);
 
     /// \brief Change the target acceleration of a servo.
     /// \param[in] servoId servo ID
     /// \param[in] acceleration target acceleration
     /// \return True if servo could successfully set target acceleration
-    bool setTargetAcceleration(uint8_t const &servoId, uint8_t const &acceleration, bool const &asynchronous = false);
+    bool writeTargetAcceleration(uint8_t const &servoId, uint8_t const &acceleration, bool const &asynchronous = false);
 
 
     /// \brief Set servo working mode: position, velocity or step.
     /// \param[in] servoId ID of the servo
     /// \param[in] mode Desired mode
-    bool setMode(unsigned char const& servoId, STSMode const& mode);
+    bool writeMode(unsigned char const& servoId, STSMode const& mode);
 
     /// \brief Trigger the action previously stored by an asynchronous write on all servos.
     /// \return True on success
@@ -262,10 +263,28 @@ public:
     /// @param[in] servoIds Array of servo IDs to control.
     /// @param[in] positions Array of target positions (corresponds to servoIds).
     /// @param[in] speeds Array of target speeds (corresponds to servoIds).
-    void setTargetPositions(uint8_t const &numberOfServos,
+    void writeTargetPositions(uint8_t const &numberOfServos,
                             const uint8_t servoIds[],
                             const int positions[],
                             const int speeds[]);
+    
+    /// @brief Set the reference position for a servo.
+    /// @param[in] servoId ID of the servo
+    /// @param[in] position Reference absolute position in radians
+    void setReferencePosition(uint8_t const &servoId, double const &position);
+
+    /// @brief Set the reference velocity for a servo.
+    /// @param[in] servoId ID of the servo
+    /// @param[in] velocity Reference velocity in rad/s
+    void setReferenceVelocity(uint8_t const &servoId, double const &velocity);
+
+    /// @brief Set the reference acceleration for a servo.
+    /// @param[in] servoId ID of the servo
+    /// @param[in] acceleration Reference velocity in rad/s^2
+    void setReferenceAcceleration(uint8_t const &servoId, double const &acceleration);
+
+    STSMode getOperatingMode();
+
 
 private:
     /// \brief Send a message to the servos.
@@ -350,9 +369,11 @@ private:
     std::vector<double> derivativeGains_;
     std::vector<double> integralGains_;
     std::unordered_map<int, size_t> idToIndex_; // Map of servo IDs to index in servoIds_
-    std::vector<double> referencePositions_;
-    std::vector<double> referenceVelocities_;
-    std::vector<double> referenceAccelerations_;
+
+    // Use pointers because vectors cannot be made atomic
+    std::vector<std::atomic<double>> referencePositions_;
+    std::vector<std::atomic<double>> referenceVelocities_;
+    std::vector<std::atomic<double>> referenceAccelerations_;
     std::vector<double> currentPositions_;
     std::vector<double> currentVelocities_;
     std::vector<double> currentTemperatures_;

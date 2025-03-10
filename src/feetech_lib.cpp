@@ -66,7 +66,7 @@ bool FeetechServo::execute()
         double velocity_ref;
         for (size_t i = 0; i < servoIds_.size(); ++i)
         {
-            servo_rads_to_go = (referencePositions_[i] - currentPositions_[i])*gearRatios_[i];
+            servo_rads_to_go = (referencePositions_[i].load() - currentPositions_[i])*gearRatios_[i];
 
             velocity_ref = std::clamp(proportionalGains_[i]*servo_rads_to_go + derivativeGains_[i]*currentVelocities_[i], 
                 -settings_.max_speed, settings_.max_speed);
@@ -75,12 +75,12 @@ bool FeetechServo::execute()
             if (abs(servo_rads_to_go)<settings_.position_tolerance)
             {
                 // Stop servo
-                setTargetVelocity(servoIds_[i], 0, false);
+                writeTargetVelocity(servoIds_[i], 0, false);
             }
             else
             {
                 // Set target velocity
-                setTargetVelocity(servoIds_[i], velocity_ref*gearRatios_[i], false);
+                writeTargetVelocity(servoIds_[i], velocity_ref*gearRatios_[i], false);
             }
         }
     }
@@ -90,7 +90,7 @@ bool FeetechServo::execute()
         for (size_t i = 0; i < servoIds_.size(); ++i)
         {
             // Set target velocity
-            setTargetVelocity(servoIds_[i], referenceVelocities_[i], true);
+            writeTargetVelocity(servoIds_[i], referenceVelocities_[i].load(), true);
         }
     }
 }
@@ -259,12 +259,12 @@ bool FeetechServo::readAllCurrentSpeeds()
     return ret;
 }
 
-int FeetechServo::getCurrentTemperature(uint8_t const &servoId)
+int FeetechServo::readCurrentTemperature(uint8_t const &servoId)
 {
     return readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_TEMPERATURE);
 }
 
-float FeetechServo::getCurrentCurrent(uint8_t const &servoId)
+float FeetechServo::readCurrentCurrent(uint8_t const &servoId)
 {
     int16_t current = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_CURRENT);
     return current * AMPERE_PER_TICK;
@@ -276,7 +276,7 @@ bool FeetechServo::isMoving(uint8_t const &servoId)
     return result > 0;
 }
 
-bool FeetechServo::setTargetPosition(uint8_t const &servoId, int const &position, int const &speed, bool const &asynchronous)
+bool FeetechServo::writeTargetPosition(uint8_t const &servoId, int const &position, int const &speed, bool const &asynchronous)
 {
     uint8_t params[6] = {0, 0, // Position
         0, 0, // Padding
@@ -286,20 +286,40 @@ bool FeetechServo::setTargetPosition(uint8_t const &servoId, int const &position
     return writeRegisters(servoId, STSRegisters::TARGET_POSITION, sizeof(params), params, asynchronous);
 }
 
-bool FeetechServo::setTargetVelocity(uint8_t const &servoId, int const &velocity, bool const &asynchronous)
+bool FeetechServo::writeTargetVelocity(uint8_t const &servoId, int const &velocity, bool const &asynchronous)
 {
     int velocity_ticks = velocity * TICKS_PER_RADIAN;
     return writeTwouint8_tsRegister(servoId, STSRegisters::RUNNING_SPEED, velocity_ticks, asynchronous);
 }
 
-bool FeetechServo::setTargetAcceleration(uint8_t const &servoId, uint8_t const &acceleration, bool const &asynchronous)
+bool FeetechServo::writeTargetAcceleration(uint8_t const &servoId, uint8_t const &acceleration, bool const &asynchronous)
 {
     return writeRegister(servoId, STSRegisters::TARGET_ACCELERATION, acceleration, asynchronous);
 }
 
-bool FeetechServo::setMode(unsigned char const& servoId, STSMode const& mode)
+bool FeetechServo::writeMode(unsigned char const& servoId, STSMode const& mode)
 {
     return writeRegister(servoId, STSRegisters::OPERATION_MODE, static_cast<unsigned char>(mode));
+}
+
+void FeetechServo::setReferencePosition(uint8_t const &servoId, double const &position)
+{
+    referencePositions_[idToIndex_[servoId]].store(position);
+}
+
+void FeetechServo::setReferenceVelocity(uint8_t const &servoId, double const &velocity)
+{
+    referenceVelocities_[idToIndex_[servoId]].store(velocity);
+}
+
+void FeetechServo::setReferenceAcceleration(uint8_t const &servoId, double const &acceleration)
+{
+    referenceAccelerations_[idToIndex_[servoId]].store(acceleration);
+}
+
+STSMode FeetechServo::getOperatingMode()
+{
+    return settings_.mode;
 }
 
 
@@ -501,7 +521,7 @@ void FeetechServo::sendAndUpdateChecksum(uint8_t convertedValue[], uint8_t &chec
     checksum += convertedValue[0] + convertedValue[1];
 }
 
-void FeetechServo::setTargetPositions(uint8_t const &numberOfServos, const uint8_t servoIds[],
+void FeetechServo::writeTargetPositions(uint8_t const &numberOfServos, const uint8_t servoIds[],
                                         const int positions[],
                                         const int speeds[])
 {   
@@ -531,7 +551,7 @@ void FeetechServo::setTargetPositions(uint8_t const &numberOfServos, const uint8
         convertIntTouint8_ts(servoIds[index], speeds[index], intAsuint8_t);
         sendAndUpdateChecksum(intAsuint8_t, checksum);
     }
-    uint8_t checksum = ~checksum;
+    checksum = ~checksum;
     this->serial->write_some(boost::asio::buffer(&checksum, 1));
 }
 
@@ -549,7 +569,6 @@ int FeetechServo::writeCommand(const uint8_t *cmd, int cmd_length)
     std::size_t ret = this->serial->write_some(boost::asio::buffer(cmd, cmd_length));
     return static_cast<int>(ret);
 }
-
 
 double FeetechServo::wrap_to_2pi(double angle_rad) {
     const double TWO_PI = 2.0 * M_PI;
