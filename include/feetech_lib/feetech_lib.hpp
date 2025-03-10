@@ -14,7 +14,7 @@
 #include <chrono>
 #include <thread>
 
-#include "feetech_lib/boost_timer.hpp"
+#include "boost_timer.hpp"
 
 boost::system::error_code ec;
 
@@ -116,8 +116,9 @@ public:
     /// \param frequency Frequency of the servo driver loop
     /// \param servoIds IDs of servos to control
     /// \returns  True on success (at least one servo responds to ping)
-    bool init(std::string port = "/dev/ttyUSB0", long const &baud = 1000000, const double frequency, 
-        const std::vector<uint8_t>& servoIds);
+    bool init(std::string port = "/dev/ttyUSB0", long const &baud = 1000000,
+              const double frequency=250.0, 
+              const std::vector<uint8_t>& servoIds={1});
 
     /// \brief Execute the servo driver loop (to be called in the timer)
     /// \returns True on success

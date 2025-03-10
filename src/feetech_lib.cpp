@@ -10,7 +10,7 @@
 
 namespace instruction
 {
-    uint8_t const PING_       = 0x01;
+    uint8_t const PING_      = 0x01;
     uint8_t const READ       = 0x02;
     uint8_t const WRITE      = 0x03;
     uint8_t const REGWRITE   = 0x04;
@@ -23,7 +23,7 @@ FeetechServo::FeetechServo() : serial(nullptr)
 {
 }
 
-bool FeetechServo::init(std::string port="/dev/ttyUSB0", long const &baud = 1000000, const double frequency, 
+bool FeetechServo::init(std::string port, long const &baud, const double frequency, 
     const std::vector<uint8_t>& servo_ids)
 {
     // Write servo IDs to member data structure
@@ -93,6 +93,8 @@ bool FeetechServo::execute()
             setTargetVelocity(servoIds_[i], referenceVelocities_[i], true);
         }
     }
+
+    return true;
 }
 
 bool FeetechServo::close()
@@ -131,11 +133,14 @@ void FeetechServo::setDriverSettings(const DriverSettings& settings)
 
 bool FeetechServo::readAllServoData()
 {
-    readAllCurrentPositions();
-    readAllCurrentSpeeds();
-    readAllCurrentCurrents(); 
-}
+    bool success = true;
 
+    success &= readAllCurrentPositions();
+    success &= readAllCurrentSpeeds();
+    success &= readAllCurrentCurrents(); 
+
+    return success;
+}
 
 
 bool FeetechServo::setId(uint8_t const &oldServoId, uint8_t const &newServoId)
@@ -315,7 +320,7 @@ int FeetechServo::sendMessage(uint8_t const &servoId,
     uint8_t const &paramLength,
     uint8_t *parameters)
 {
-    uint8_t message[6 + paramLength];
+    std::vector<uint8_t> message(6 + paramLength);
     uint8_t checksum = servoId + paramLength + 2 + commandID;
     message[0] = 0xFF;
     message[1] = 0xFF;
@@ -331,7 +336,7 @@ int FeetechServo::sendMessage(uint8_t const &servoId,
     message[5 + paramLength] = ~checksum;
 
     // Todo implement message sending via boost (?)
-    int ret = this->writeCommand(message, 6 + paramLength);
+    int ret = this->writeCommand(message.data(), 6 + paramLength);
     // Give time for the message to be processed.
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     return ret;
@@ -343,14 +348,14 @@ bool FeetechServo::writeRegisters(uint8_t const &servoId,
                                     uint8_t const *parameters,
                                     bool const &asynchronous)
 {
-    uint8_t param[writeLength + 1];
+    std::vector<uint8_t> param(writeLength + 1);
     param[0] = startRegister;
     for (int i = 0; i < writeLength; i++)
         param[i + 1] = parameters[i];
     int rc = sendMessage(servoId,
                          asynchronous ? instruction::REGWRITE : instruction::WRITE,
                          writeLength + 1,
-                         param);
+                         param.data());
     return rc == writeLength + 7;
 }
 
@@ -431,8 +436,8 @@ int FeetechServo::readRegisters(uint8_t const &servoId,
     if (send != 8)
         return -1;
     // Read
-    uint8_t result[readLength + 1];
-    int rd = receiveMessage(servoId, readLength + 1, result);
+    std::vector<uint8_t> result(readLength + 1);
+    int rd = receiveMessage(servoId, readLength + 1, result.data());
     if (rd < 0)
         return rd;
 
@@ -445,8 +450,8 @@ int FeetechServo::receiveMessage(uint8_t const& servoId,
                                    uint8_t const& readLength,
                                    uint8_t *outputBuffer)
 {   
-    uint8_t result[readLength + 5];
-    size_t rd = this->serial->read_some(boost::asio::buffer(result, readLength + 5));
+    std::vector<uint8_t> result(readLength + 5);
+    size_t rd = this->serial->read_some(boost::asio::buffer(result.data(), readLength + 5));
     if (rd != (unsigned short)(readLength + 5))
         return -1;
     // Check message integrity
@@ -531,7 +536,8 @@ void FeetechServo::setTargetPositions(uint8_t const &numberOfServos, const uint8
         convertIntTouint8_ts(servoIds[index], speeds[index], intAsuint8_t);
         sendAndUpdateChecksum(intAsuint8_t, checksum);
     }
-    uint8_t checksum = ~checksum;
+    
+    checksum = ~checksum;
     this->serial->write_some(boost::asio::buffer(&checksum, 1));
 }
 
