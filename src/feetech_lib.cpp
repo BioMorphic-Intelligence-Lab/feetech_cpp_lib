@@ -234,6 +234,12 @@ bool FeetechServo::readAllCurrentPositions()
     return ret;
 }
 
+bool FeetechServo::readAllCurrentCurrents()
+{
+    // ToDo implement
+    return true;
+}
+
 double FeetechServo::readCurrentSpeed(uint8_t const &servoId)
 {
     // Get velocity in counts/second

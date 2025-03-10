@@ -17,9 +17,6 @@
 
 #include "boost_timer.hpp"
 
-boost::system::error_code ec;
-
-
 namespace STSRegisters
 {
     uint8_t const FIRMWARE_MAJOR           = 0x00;

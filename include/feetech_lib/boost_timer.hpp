@@ -2,8 +2,10 @@
 #include <iostream>
 #include <thread>
 
-/* Creates a timer that calls the callback function at a given frequency in a separate thread*/
+#ifndef BOOST_TIMER_HPP_
+#define BOOST_TIMER_HPP_
 
+/* Creates a timer that calls the callback function at a given frequency in a separate thread*/
 class BoostTimer {
 public:
     BoostTimer(double frequency, std::function<void()> callback)
@@ -23,8 +25,8 @@ public:
 private:
     void start() {
         timer_.expires_after(period_);
-        timer_.async_wait([this](const boost::system::error_code& ec) {
-            if (!ec) {
+        timer_.async_wait([this](const boost::system::error_code& error_code) {
+            if (!error_code) {
                 callback_();
                 start();
             }
@@ -37,3 +39,5 @@ private:
     std::chrono::milliseconds period_;
     std::thread thread_;
 };
+
+#endif
