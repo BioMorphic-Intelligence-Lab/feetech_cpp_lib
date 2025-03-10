@@ -284,6 +284,14 @@ public:
     /// @param[in] acceleration Reference velocity in rad/s^2
     void setReferenceAcceleration(uint8_t const &servoId, double const &acceleration);
 
+    std::vector<double> getCurrentPositions();
+
+    std::vector<double> getCurrentVelocities();
+
+    std::vector<double> getCurrentTemperatures();
+    
+    std::vector<double> getCurrentCurrents();
+
     STSMode getOperatingMode();
 
 

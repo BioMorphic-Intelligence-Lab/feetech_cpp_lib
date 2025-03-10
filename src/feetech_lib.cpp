@@ -322,6 +322,26 @@ void FeetechServo::setReferenceAcceleration(uint8_t const &servoId, double const
     referenceAccelerations_[idToIndex_[servoId]].store(acceleration);
 }
 
+std::vector<double> FeetechServo::getCurrentPositions()
+{
+    return currentPositions_;
+}
+
+std::vector<double> FeetechServo::getCurrentVelocities()
+{
+    return currentVelocities_;
+}
+
+std::vector<double> FeetechServo::getCurrentTemperatures()
+{
+    return currentTemperatures_;
+}
+
+std::vector<double> FeetechServo::getCurrentCurrents()
+{
+    return currentCurrents_;
+}
+
 STSMode FeetechServo::getOperatingMode()
 {
     return settings_.mode;
