@@ -30,6 +30,14 @@ bool FeetechServo::init(std::string port, long const &baud, const double frequen
     servoIds_ = servo_ids;
     for (size_t i = 0; i < servoIds_.size(); ++i) {
         idToIndex_[servoIds_[i]] = i;
+        gearRatios_.push_back(1.0);
+        currentPositions_.push_back(0.0);
+        currentVelocities_.push_back(0.0);
+        currentTemperatures_.push_back(0.0);
+        currentCurrents_.push_back(0.0);
+        proportionalGains_.push_back(1.0);
+        derivativeGains_.push_back(0.1);
+        // TODO: How to set the references with atomic?
     }
 
     // ToDo: Fix Serial Connection over USB
@@ -44,13 +52,14 @@ bool FeetechServo::init(std::string port, long const &baud, const double frequen
     // Controller
     timer_ = std::make_unique<BoostTimer>(frequency, std::bind(&FeetechServo::execute, this));
 
-    // Test that a servo is present.
-    for (uint8_t i = 0x00; i < 0xFE; i++)
-        if (ping(i))
-            return true;
-    return false;
-
     // Set all servos to velocity mode and torque enable
+    
+
+    // Read all data once to populate data structs
+    std::cout << "Reading all servo data..." << std::endl;
+    readAllServoData();
+    std::cout << "Reading all servo data..." << std::endl;
+    return true;
 }
 
 bool FeetechServo::execute()
@@ -190,10 +199,12 @@ bool FeetechServo::setPositionOffset(uint8_t const &servoId, int const &position
 
 double FeetechServo::readCurrentPosition(uint8_t const &servoId)
 {
+    std::cout << "Reading position for servo 1" << servoId << std::endl;
     // Calculate wrapped position at servo horn (in radians)
     double previous_wrapped_position = wrap_to_2pi(currentPositions_[idToIndex_[servoId]]*gearRatios_[idToIndex_[servoId]]);
     
     // Get current position at servo horn in radianss
+    std::cout << "Reading position for servo 2" << servoId << std::endl;
     double position = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION)*RADIANS_PER_TICK;
     if (position==0)
         return 0;
@@ -226,6 +237,7 @@ bool FeetechServo::readAllCurrentPositions()
     // Loop over servo IDs and read current position
     for (size_t i = 0; i < servoIds_.size(); ++i)
     {
+        std::cout << "Reading position for servo (all current positions)" << servoIds_[i] << std::endl;
         position = readCurrentPosition(servoIds_[i]);
         // If 0 is returned, position is not read correctly, so return value of function becomes false
         if (position == 0)
@@ -602,7 +614,9 @@ int FeetechServo::writeCommand(const uint8_t *cmd, int cmd_length)
 }
 
 double FeetechServo::wrap_to_2pi(double angle_rad) {
+    std::cout << "Angle before wrapping: " << angle_rad << std::endl;
     const double TWO_PI = 2.0 * M_PI;
+    
     angle_rad = std::fmod(angle_rad, TWO_PI);
     if (angle_rad < 0)
         angle_rad += TWO_PI;
