@@ -95,28 +95,23 @@ struct DriverSettings
     long baud = 1000000;
     double frequency = 100;
     UNITS unit = RAD;
-    double max_speed = 6.28319;
+    double max_speed = 6.28319; // TODO: specify per servo
     int max_servos = 35;
-    STSMode mode = STSMode::POSITION;
+    STSMode mode = STSMode::POSITION; // TODO: specify per servo
     double position_tolerance = 0.01; // rad
+    int tx_time_per_byte = 1000./(float)baud*10; // 10 bits per byte for some overhead
 };
 
 /// \brief Driver for STS servos, using UART
 class FeetechServo
 {
 public:
-    /// \brief Constructor.
-    FeetechServo();
-
-    /// \brief Initialize the servo driver. Call this directly after constructing the object.
+    /// \brief Constructor. Initialize the servo driver.
     /// \param port port name, default /dev/ttyUSB0
     /// \param baud Baud rate, default 1Mbps
-    /// \param frequency Frequency of the servo driver loop
-    /// \param servoIds IDs of servos to control
-    /// \returns  True on success (at least one servo responds to ping)
-    bool init(std::string port = "/dev/ttyUSB0", long const &baud = 1000000,
-              const double frequency=250.0, 
-              const std::vector<uint8_t>& servoIds={1});
+    /// \param frequency Frequency of the servo driver loop, default 250 Hz
+    /// \param servoIds IDs of servos to control, default 1
+    FeetechServo(std::string port="/dev/ttyUSB0", long const &baud=1000000, const double frequency=250, const std::vector<uint8_t>& servo_ids = {1});
 
     /// \brief Execute the servo driver loop (to be called in the timer)
     /// \returns True on success
@@ -316,6 +311,8 @@ private:
     int receiveMessage(uint8_t const &servoId,
                        uint8_t const &readLength,
                        uint8_t *outputBuffer);
+    
+    size_t read_bytes(std::vector<char>& buffer, std::size_t bytes_to_read);
 
     /// \brief Write to a sequence of consecutive registers
     /// \param[in] servoId ID of the servo
@@ -370,11 +367,11 @@ private:
     
     // Servo data
     std::vector<uint8_t> servoIds_; // IDs of servos to control
+    std::unordered_map<int, size_t> idToIndex_; // Map of servo IDs to index in servoIds_
     std::vector<double> gearRatios_;
     std::vector<double> proportionalGains_;
     std::vector<double> derivativeGains_;
     std::vector<double> integralGains_;
-    std::unordered_map<int, size_t> idToIndex_; // Map of servo IDs to index in servoIds_
 
     // Use pointers because vectors cannot be made atomic
     std::vector<std::atomic<double>> referencePositions_;

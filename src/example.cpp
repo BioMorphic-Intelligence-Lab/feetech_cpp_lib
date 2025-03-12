@@ -4,7 +4,7 @@ int main()
 {
     std::cout << "Feetech Servo Library Example" << std::endl;
     // Create a FeetechServo object
-    FeetechServo servo;
+    
 
     // Initialize the servo object
     std::string port = "/dev/ttyUSB0";
@@ -12,8 +12,7 @@ int main()
     double frequency = 100;
     std::vector<uint8_t> servo_ids = {0x21};
     std::cout << "Initializing servo object..." << std::endl;
-    servo.init(port, baud, frequency, servo_ids);
-
+    FeetechServo servo(port, baud, frequency, servo_ids);
 
     // Execute the servo object
     double position;

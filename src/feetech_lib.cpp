@@ -19,28 +19,35 @@ namespace instruction
     uint8_t const RESET      = 0x06;
 };
 
-FeetechServo::FeetechServo() : serial(nullptr)
-{
-}
-
-bool FeetechServo::init(std::string port, long const &baud, const double frequency, 
-    const std::vector<uint8_t>& servo_ids)
-{
+FeetechServo::FeetechServo(std::string port, long const &baud, const double frequency, const std::vector<uint8_t>& servo_ids) : 
+    serial(nullptr), 
+    referencePositions_(servo_ids.size()),
+    referenceVelocities_(servo_ids.size()),
+    referenceAccelerations_(servo_ids.size())
+    {
     // Write servo IDs to member data structure
     servoIds_ = servo_ids;
+
     for (size_t i = 0; i < servoIds_.size(); ++i) {
         idToIndex_[servoIds_[i]] = i;
         gearRatios_.push_back(1.0);
+        proportionalGains_.push_back(1.0);
+        derivativeGains_.push_back(0.1);
+        integralGains_.push_back(0.0);
+
+        referencePositions_[i].store(0);  // Default constructs std::atomic<double>
+        referenceVelocities_[i].store(0);
+        referenceAccelerations_[i].store(0);
+
         currentPositions_.push_back(0.0);
         currentVelocities_.push_back(0.0);
         currentTemperatures_.push_back(0.0);
         currentCurrents_.push_back(0.0);
-        proportionalGains_.push_back(1.0);
-        derivativeGains_.push_back(0.1);
-        // TODO: How to set the references with atomic?
+        homePositions_.push_back(0.0);
+
+        servoType_.push_back(ServoType::UNKNOWN);
     }
 
-    // ToDo: Fix Serial Connection over USB
     /* Open the serial port for communication */
     boost::asio::io_service io;
     this->serial = new boost::asio::serial_port(io, port);
@@ -48,18 +55,29 @@ bool FeetechServo::init(std::string port, long const &baud, const double frequen
     this->serial->set_option(boost::asio::serial_port_base::character_size(8 /* data bits */));
     this->serial->set_option(boost::asio::serial_port_base::parity(boost::asio::serial_port_base::parity::none));
     this->serial->set_option(boost::asio::serial_port_base::stop_bits(boost::asio::serial_port_base::stop_bits::one));
-
-    // Controller
-    timer_ = std::make_unique<BoostTimer>(frequency, std::bind(&FeetechServo::execute, this));
-
-    // Set all servos to velocity mode and torque enable
-    
+    std::cout << "Serial port opened" << std::endl;
 
     // Read all data once to populate data structs
     std::cout << "Reading all servo data..." << std::endl;
-    readAllServoData();
-    std::cout << "Reading all servo data..." << std::endl;
-    return true;
+    bool success=false;
+    int fail_counter = 0;
+    while(!success)
+    {
+        success = readAllServoData();
+        fail_counter++;
+        if (fail_counter>10)
+        {
+            std::cerr << "\033[31m" << "[ERROR] Failed to read all servo data for 10 attempts. Are all servos connected?" << "\033[0m" << std::endl;
+            exit(-1);
+        }
+    }
+    std::cout << "Done reading all servo data..." << std::endl;
+
+    // Controller
+    std::cout << "Starting controller..." << std::endl;
+    timer_ = std::make_unique<BoostTimer>(frequency, std::bind(&FeetechServo::execute, this));
+
+    // Set all servos to velocity mode and torque enable
 }
 
 bool FeetechServo::execute()
@@ -75,7 +93,7 @@ bool FeetechServo::execute()
         double velocity_ref;
         for (size_t i = 0; i < servoIds_.size(); ++i)
         {
-            servo_rads_to_go = (referencePositions_[i].load() - currentPositions_[i])*gearRatios_[i];
+            servo_rads_to_go = (referencePositions_[i].load(std::memory_order_relaxed) - currentPositions_[i])*gearRatios_[i];
 
             velocity_ref = std::clamp(proportionalGains_[i]*servo_rads_to_go + derivativeGains_[i]*currentVelocities_[i], 
                 -settings_.max_speed, settings_.max_speed);
@@ -148,6 +166,10 @@ bool FeetechServo::readAllServoData()
     success &= readAllCurrentSpeeds();
     success &= readAllCurrentCurrents(); 
 
+    if (!success)
+        // Make error appear in red
+        std::cerr << "\033[31m" << "[ERROR] Failed to read all servo data" << "\033[0m" << std::endl;
+
     return success;
 }
 
@@ -199,12 +221,10 @@ bool FeetechServo::setPositionOffset(uint8_t const &servoId, int const &position
 
 double FeetechServo::readCurrentPosition(uint8_t const &servoId)
 {
-    std::cout << "Reading position for servo 1" << servoId << std::endl;
     // Calculate wrapped position at servo horn (in radians)
     double previous_wrapped_position = wrap_to_2pi(currentPositions_[idToIndex_[servoId]]*gearRatios_[idToIndex_[servoId]]);
     
     // Get current position at servo horn in radianss
-    std::cout << "Reading position for servo 2" << servoId << std::endl;
     double position = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION)*RADIANS_PER_TICK;
     if (position==0)
         return 0;
@@ -246,12 +266,6 @@ bool FeetechServo::readAllCurrentPositions()
     return ret;
 }
 
-bool FeetechServo::readAllCurrentCurrents()
-{
-    // ToDo implement
-    return true;
-}
-
 double FeetechServo::readCurrentSpeed(uint8_t const &servoId)
 {
     // Get velocity in counts/second
@@ -289,8 +303,31 @@ int FeetechServo::readCurrentTemperature(uint8_t const &servoId)
 
 float FeetechServo::readCurrentCurrent(uint8_t const &servoId)
 {
-    int16_t current = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_CURRENT);
-    return current * AMPERE_PER_TICK;
+    // Get velocity in counts/second
+    int16_t current_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_CURRENT);
+
+    // If 0 is returned, velocity is not read correctly, return and keep old value
+    if (current_ticks == 0)
+        return 0;
+    
+    double current_amps = current_ticks*AMPERE_PER_TICK;
+    currentCurrents_[idToIndex_[servoId]] = current_amps;
+    return current_amps;
+}
+
+bool FeetechServo::readAllCurrentCurrents()
+{
+    bool ret = true;
+    double current;
+    // Loop over servo IDs and read current speed
+    for (size_t i = 0; i < servoIds_.size(); ++i)
+    {
+        current = readCurrentCurrent(servoIds_[i]);
+        // If 0 is returned, velocity is not read correctly, so return value of function becomes false
+        if (current == 0)
+            ret = false;
+    }
+    return ret;
 }
 
 bool FeetechServo::isMoving(uint8_t const &servoId)
@@ -327,7 +364,7 @@ bool FeetechServo::writeMode(unsigned char const& servoId, STSMode const& mode)
 
 void FeetechServo::setReferencePosition(uint8_t const &servoId, double const &position)
 {
-    referencePositions_[idToIndex_[servoId]].store(position);
+    referencePositions_[idToIndex_[servoId]].store(position, std::memory_order_relaxed);
 }
 
 void FeetechServo::setReferenceVelocity(uint8_t const &servoId, double const &velocity)
@@ -396,7 +433,7 @@ int FeetechServo::sendMessage(uint8_t const &servoId,
     // Todo implement message sending via boost (?)
     int ret = this->writeCommand(message.data(), 6 + paramLength);
     // Give time for the message to be processed.
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
     return ret;
 }
 
@@ -439,6 +476,7 @@ uint8_t FeetechServo::readRegister(uint8_t const &servoId, uint8_t const &regist
 {
     uint8_t result = 0;
     int rc = readRegisters(servoId, registerId, 1, &result);
+
     if (rc < 0)
         return 0;
     return result;
@@ -446,7 +484,7 @@ uint8_t FeetechServo::readRegister(uint8_t const &servoId, uint8_t const &regist
 
 int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t const &registerId)
 {
-    if (servoType_[servoId] == ServoType::UNKNOWN)
+    if (servoType_[idToIndex_[servoId]] == ServoType::UNKNOWN)
     {
         determineServoType(servoId);
     }
@@ -454,10 +492,12 @@ int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t co
     unsigned char result[2] = {0, 0};
     int16_t value = 0;
     int16_t signedValue = 0;
+
     int rc = readRegisters(servoId, registerId, 2, result);
+
     if (rc < 0)
         return 0;
-    switch(servoType_[servoId])
+    switch(servoType_[idToIndex_[servoId]])
     {
         case ServoType::SCS:
             value = static_cast<int16_t>(result[1] +  (result[0] << 8));
@@ -490,17 +530,23 @@ int FeetechServo::readRegisters(uint8_t const &servoId,
 
     // Send read command
     int send = sendMessage(servoId, instruction::READ, 2, readParam);
+
     // Failed to send
     if (send != 8)
+    {
         return -1;
+    }
     // Read
     std::vector<uint8_t> result(readLength + 1);
     int rd = receiveMessage(servoId, readLength + 1, result.data());
     if (rd < 0)
+    {
         return rd;
-
+    }
     for (int i = 0; i < readLength; i++)
+    {
         outputBuffer[i] = result[i + 1];
+    }
     return 0;
 }
 
@@ -509,12 +555,50 @@ int FeetechServo::receiveMessage(uint8_t const& servoId,
                                    uint8_t *outputBuffer)
 {   
     std::vector<uint8_t> result(readLength + 5);
-    size_t rd = this->serial->read_some(boost::asio::buffer(result.data(), readLength + 5));
+    boost::system::error_code error;
+    int serial_timeout_ms = (int)(settings_.tx_time_per_byte * (readLength + 5) + 10);
+
+    // Handler for async read
+    size_t rd = 0;
+    auto handler = [&](const boost::system::error_code& error, std::size_t bytes_transferred)
+      {
+        rd = bytes_transferred;
+        if (error) {
+            this->serial->cancel(); // Stop the io_context from running
+            return;
+        }
+        return;
+    };
+
+    size_t bytes_read = 0;
+    auto start = std::chrono::high_resolution_clock::now();
+    while (bytes_read < readLength + 5) {
+        // Check if timeout occurred
+        if (std::chrono::high_resolution_clock::now() - start > std::chrono::milliseconds(serial_timeout_ms)) {
+            std::cout << "Timeout occurred in while" << std::endl;
+            this->serial->cancel(); // Cancel read operation
+            return -1;
+        }
+        // Wait for data or timeout (non-blocking check)
+        this->serial->async_read_some(boost::asio::buffer(result.data() + bytes_read, readLength + 5 - bytes_read), handler);
+        // Return invalid message on error
+        if (error) {
+            std::cout << "Error reading message" << std::endl;
+            this->serial->cancel(); // Cancel read operation
+            return -2;
+        }
+
+        bytes_read += rd;
+    }
+
+    // Check if read length is correct
     if (rd != (unsigned short)(readLength + 5))
         return -1;
+
     // Check message integrity
     if (result[0] != 0xFF || result[1] != 0xFF || result[2] != servoId || result[3] != readLength + 1)
         return -2;
+
     uint8_t checksum = 0;
     for (int i = 2; i < readLength + 4; i++)
         checksum += result[i];
@@ -525,19 +609,21 @@ int FeetechServo::receiveMessage(uint8_t const& servoId,
     // Copy result to output buffer
     for (int i = 0; i < readLength; i++)
         outputBuffer[i] = result[i + 4];
+
     return 0;
 }
+
 
 void FeetechServo::convertIntTouint8_ts(uint8_t const& servoId, int const &value, uint8_t result[2])
 {
     uint16_t servoValue = 0;
-    if (servoType_[servoId] == ServoType::UNKNOWN)
+    if (servoType_[idToIndex_[servoId]] == ServoType::UNKNOWN)
     {
         determineServoType(servoId);
     }
 
     // Handle different servo type.
-    switch(servoType_[servoId])
+    switch(servoType_[idToIndex_[servoId]])
     {
         case ServoType::SCS:
             // Little endian ; uint8_t 10 is sign.
@@ -602,8 +688,8 @@ void FeetechServo::determineServoType(uint8_t const& servoId)
 {
     switch(readRegister(servoId, STSRegisters::SERVO_MAJOR))
     {
-        case 9: servoType_[servoId] = ServoType::STS; break;
-        case 5: servoType_[servoId] = ServoType::SCS; break;
+        case 9: servoType_[idToIndex_[servoId]] = ServoType::STS; break;
+        case 5: servoType_[idToIndex_[servoId]] = ServoType::SCS; break;
     }
 }
 
@@ -614,7 +700,6 @@ int FeetechServo::writeCommand(const uint8_t *cmd, int cmd_length)
 }
 
 double FeetechServo::wrap_to_2pi(double angle_rad) {
-    std::cout << "Angle before wrapping: " << angle_rad << std::endl;
     const double TWO_PI = 2.0 * M_PI;
     
     angle_rad = std::fmod(angle_rad, TWO_PI);
