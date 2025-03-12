@@ -50,7 +50,14 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
 
     /* Open the serial port for communication */
     boost::asio::io_service io;
-    this->serial = new boost::asio::serial_port(io, port);
+    try{
+        this->serial = new boost::asio::serial_port(io, port);
+    }
+    catch (const boost::wrapexcept<boost::system::system_error>& e){
+        std::cerr << "\033[31m" << "[ERROR] Could not open serial port, is the USB connected?" << "\033[0m" << std::endl;
+        this->close();
+        exit(1);
+    } 
     this->serial->set_option(boost::asio::serial_port_base::baud_rate(baud));
     this->serial->set_option(boost::asio::serial_port_base::character_size(8 /* data bits */));
     this->serial->set_option(boost::asio::serial_port_base::parity(boost::asio::serial_port_base::parity::none));
@@ -572,7 +579,7 @@ int FeetechServo::receiveMessage(uint8_t const& servoId,
 
     size_t bytes_read = 0;
     auto start = std::chrono::high_resolution_clock::now();
-    while (bytes_read < readLength + 5) {
+    while (bytes_read < (uint8_t)(readLength + 5)) {
         // Check if timeout occurred
         if (std::chrono::high_resolution_clock::now() - start > std::chrono::milliseconds(serial_timeout_ms)) {
             std::cout << "Timeout occurred in while" << std::endl;
