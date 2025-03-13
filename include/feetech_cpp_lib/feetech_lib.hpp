@@ -160,23 +160,23 @@ public:
     /// \brief Get current servo position.
     /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
     /// \param[in] servoId ID of the servo
-    /// \return Position, in rad. 0 on failure.
+    /// \return Position, in rad, -1 on read failure, -2 on servo type failure.
     double readCurrentPosition(uint8_t const &servoId);
 
     /// \brief Get current servo speed.
     /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
     /// \param[in] servoId ID of the servo
-    /// \return Speed, in rad/s. 0 on failure.
+    /// \return Speed, in rad/s, -1 on read failure, -2 on servo type failure.
     double readCurrentSpeed(uint8_t const &servoId);
 
     /// \brief Get current servo temperature.
     /// \param[in] servoId ID of the servo
-    /// \return Temperature, in degC. 0 on failure.
+    /// \return Temperature, in degC, -1 on read failure, -2 on servo type failure.
     int readCurrentTemperature(uint8_t const &servoId);
 
     /// \brief Get current servo current.
     /// \param[in] servoId ID of the servo
-    /// \return Current, in A.
+    /// \return Current, in A, -1 on read failure, -2 on servo type failure.
     float readCurrentCurrent(uint8_t const &servoId);
 
     /// \brief Check if the servo is moving
@@ -248,7 +248,7 @@ public:
     /// \brief Read two uint8_ts, interpret result as <LSB> <MSB>
     /// \param[in] servoId ID of the servo
     /// \param[in] registerId LSB register id.
-    /// \return Register value, 0 on failure.
+    /// \return Register value, -1 on read failure, -2 on servo type failure.
     int16_t readTwouint8_tsRegister(uint8_t const &servoId, uint8_t const &registerId);
 
     /// @brief Sets the target positions for multiple servos simultaneously.
@@ -361,7 +361,8 @@ private:
     /// @return Wrapped angle in radians
     double wrap_to_2pi(double angle_rad);
 
-    boost::asio::serial_port* serial;
+    boost::asio::io_context* io_context_;
+    boost::asio::serial_port* serial_;
 
     std::unique_ptr<BoostTimer> timer_;
     

@@ -20,7 +20,7 @@ namespace instruction
 };
 
 FeetechServo::FeetechServo(std::string port, long const &baud, const double frequency, const std::vector<uint8_t>& servo_ids) : 
-    serial(nullptr), 
+    serial_(nullptr), 
     referencePositions_(servo_ids.size()),
     referenceVelocities_(servo_ids.size()),
     referenceAccelerations_(servo_ids.size())
@@ -49,19 +49,28 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     }
 
     /* Open the serial port for communication */
-    boost::asio::io_service io;
     try{
-        this->serial = new boost::asio::serial_port(io, port);
+        this->io_context_ = new boost::asio::io_context();
+        this->serial_ = new boost::asio::serial_port(*io_context_, port);
     }
     catch (const boost::wrapexcept<boost::system::system_error>& e){
         std::cerr << "\033[31m" << "[ERROR] Could not open serial port, is the USB connected?" << "\033[0m" << std::endl;
         exit(1);
     } 
-    this->serial->set_option(boost::asio::serial_port_base::baud_rate(baud));
-    this->serial->set_option(boost::asio::serial_port_base::character_size(8 /* data bits */));
-    this->serial->set_option(boost::asio::serial_port_base::parity(boost::asio::serial_port_base::parity::none));
-    this->serial->set_option(boost::asio::serial_port_base::stop_bits(boost::asio::serial_port_base::stop_bits::one));
+    this->serial_->set_option(boost::asio::serial_port_base::baud_rate(baud));
+    this->serial_->set_option(boost::asio::serial_port_base::character_size(8 /* data bits */));
+    this->serial_->set_option(boost::asio::serial_port_base::parity(boost::asio::serial_port_base::parity::none));
+    this->serial_->set_option(boost::asio::serial_port_base::stop_bits(boost::asio::serial_port_base::stop_bits::one));
     std::cout << "Serial port opened" << std::endl;
+
+    // Set servo to position mode
+    writeMode(servoIds_[0], STSMode::VELOCITY);
+
+    // Write a position
+    writeTargetVelocity(servoIds_[0], 0, false); 
+
+    readCurrentPosition(servoIds_[0]);
+    std::cout << "Current position constructor: " << currentPositions_[0] << std::endl;
 
     // Read all data once to populate data structs
     std::cout << "Reading all servo data..." << std::endl;
@@ -132,11 +141,11 @@ bool FeetechServo::execute()
 
 bool FeetechServo::close()
 {
-    if (this->serial != nullptr)
+    if (this->serial_ != nullptr)
     {
-        this->serial->close();
-        delete this->serial;
-        this->serial = nullptr;
+        this->serial_->close();
+        delete this->serial_;
+        this->serial_ = nullptr;
         return true;
     }
     return false;
@@ -169,8 +178,11 @@ bool FeetechServo::readAllServoData()
     bool success = true;
 
     success &= readAllCurrentPositions();
+    std::cout << "Current positions success: " << success << std::endl;
     success &= readAllCurrentSpeeds();
+    std::cout << "Current speeds success: " << success << std::endl;
     success &= readAllCurrentCurrents(); 
+    std::cout << "Current currents success: " << success << std::endl;
 
     if (!success)
         // Make error appear in red
@@ -278,8 +290,11 @@ double FeetechServo::readCurrentSpeed(uint8_t const &servoId)
     int16_t velocity_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_SPEED);
 
     // If 0 is returned, velocity is not read correctly, return and keep old value
-    if (velocity_ticks == 0)
-        return 0;
+    // TODO fix, if the servo is still this does not hold
+    if (velocity_ticks == -1)
+        return -1;
+    else if (velocity_ticks == -2)
+        return -2;
     
     double velocity_rads = velocity_ticks*RADIANS_PER_TICK;
     currentVelocities_[idToIndex_[servoId]] = velocity_rads;
@@ -295,8 +310,8 @@ bool FeetechServo::readAllCurrentSpeeds()
     for (size_t i = 0; i < servoIds_.size(); ++i)
     {
         velocity = readCurrentSpeed(servoIds_[i]);
-        // If 0 is returned, velocity is not read correctly, so return value of function becomes false
-        if (velocity == 0)
+        // If -1 or -2 is returned, velocity is not read correctly, so return value of function becomes false
+        if (velocity == -1 || velocity == -2) // TODO: Do something about the error codes, the velocity can actually be -1 or -2 rad/s, although this would be very unlikely
             ret = false;
     }
     return ret;
@@ -309,12 +324,12 @@ int FeetechServo::readCurrentTemperature(uint8_t const &servoId)
 
 float FeetechServo::readCurrentCurrent(uint8_t const &servoId)
 {
-    // Get velocity in counts/second
+    // Get current in counts
     int16_t current_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_CURRENT);
 
-    // If 0 is returned, velocity is not read correctly, return and keep old value
-    if (current_ticks == 0)
-        return 0;
+    // If 0 is returned, current is not read correctly, return and keep old value
+    if (current_ticks == -1 || current_ticks == -2)
+        return current_ticks; // Return the error code
     
     double current_amps = current_ticks*AMPERE_PER_TICK;
     currentCurrents_[idToIndex_[servoId]] = current_amps;
@@ -330,7 +345,7 @@ bool FeetechServo::readAllCurrentCurrents()
     {
         current = readCurrentCurrent(servoIds_[i]);
         // If 0 is returned, velocity is not read correctly, so return value of function becomes false
-        if (current == 0)
+        if (current == -1 || current == -2)
             ret = false;
     }
     return ret;
@@ -502,7 +517,7 @@ int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t co
     int rc = readRegisters(servoId, registerId, 2, result);
 
     if (rc < 0)
-        return 0;
+        return -1;
     switch(servoType_[idToIndex_[servoId]])
     {
         case ServoType::SCS:
@@ -520,7 +535,7 @@ int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t co
                 signedValue = -signedValue;
             return signedValue;
         default:
-            return 0;
+            return -2;
     }
 }
 
@@ -531,7 +546,7 @@ int FeetechServo::readRegisters(uint8_t const &servoId,
 {
     uint8_t readParam[2] = {startRegister, readLength};
     // Flush read buffer
-    int fd = this->serial->native_handle();
+    int fd = this->serial_->native_handle();
     tcflush(fd, TCIFLUSH);
 
     // Send read command
@@ -544,6 +559,7 @@ int FeetechServo::readRegisters(uint8_t const &servoId,
     }
     // Read
     std::vector<uint8_t> result(readLength + 1);
+    std::cout << "Receiving message" << std::endl;
     int rd = receiveMessage(servoId, readLength + 1, result.data());
     if (rd < 0)
     {
@@ -557,65 +573,65 @@ int FeetechServo::readRegisters(uint8_t const &servoId,
 }
 
 int FeetechServo::receiveMessage(uint8_t const& servoId,
-                                   uint8_t const& readLength,
-                                   uint8_t *outputBuffer)
-{   
+                                  uint8_t const& readLength,
+                                  uint8_t *outputBuffer)
+{
     std::vector<uint8_t> result(readLength + 5);
-    boost::system::error_code error;
-    int serial_timeout_ms = (int)(settings_.tx_time_per_byte * (readLength + 5) + 10);
+    boost::system::error_code read_ec, timer_ec;
+    std::size_t bytes_read = 0;
 
-    // Handler for async read
-    size_t rd = 0;
-    auto handler = [&](const boost::system::error_code& error, std::size_t bytes_transferred)
-      {
-        rd = bytes_transferred;
-        if (error) {
-            this->serial->cancel(); // Stop the io_context from running
-            return;
-        }
-        return;
-    };
+    int serial_timeout_ms = static_cast<int>(settings_.tx_time_per_byte * (readLength + 5) + 10);
 
-    size_t bytes_read = 0;
-    auto start = std::chrono::high_resolution_clock::now();
-    while (bytes_read < (uint8_t)(readLength + 5)) {
-        // Check if timeout occurred
-        if (std::chrono::high_resolution_clock::now() - start > std::chrono::milliseconds(serial_timeout_ms)) {
-            //std::cout << "Timeout occurred in while" << std::endl;
-            this->serial->cancel(); // Cancel read operation
-            return -1;
-        }
-        // Wait for data or timeout (non-blocking check)
-        this->serial->async_read_some(boost::asio::buffer(result.data() + bytes_read, readLength + 5 - bytes_read), handler);
-        // Return invalid message on error
-        if (error) {
-            std::cout << "Error reading message" << std::endl;
-            this->serial->cancel(); // Cancel read operation
-            return -2;
-        }
+    boost::asio::steady_timer timer(*io_context_);
+    bool read_done = false, timer_expired = false;
 
-        bytes_read += rd;
+    // Start timer
+    timer.expires_after(std::chrono::milliseconds(serial_timeout_ms));
+    timer.async_wait([&](const boost::system::error_code& ec) {
+        if (!ec) {
+            timer_expired = true;
+            serial_->cancel(); // Cancel read
+        }
+    });
+
+    // Start async read
+    boost::asio::async_read(
+        *serial_,
+        boost::asio::buffer(result),
+        boost::asio::transfer_exactly(readLength + 5),
+        [&](const boost::system::error_code& ec, std::size_t len) {
+            read_ec = ec;
+            bytes_read = len;
+            read_done = true;
+            timer.cancel(); // Stop the timer
+        });
+
+    io_context_->reset(); // Prepare io_context for a new run
+    io_context_->run();
+
+    if (timer_expired) {
+        std::cout << "Timeout while reading serial\n";
+        return -1;
     }
 
-    // Check if read length is correct
-    if (rd != (unsigned short)(readLength + 5))
-        return -1;
+    if (read_ec || bytes_read != (readLength + 5)) {
+        std::cout << "Error during serial read\n";
+        return -2;
+    }
 
     // Check message integrity
     if (result[0] != 0xFF || result[1] != 0xFF || result[2] != servoId || result[3] != readLength + 1)
-        return -2;
+        return -3;
 
     uint8_t checksum = 0;
     for (int i = 2; i < readLength + 4; i++)
         checksum += result[i];
     checksum = ~checksum;
     if (result[readLength + 4] != checksum)
-        return -3;
+        return -4;
 
-    // Copy result to output buffer
-    for (int i = 0; i < readLength; i++)
-        outputBuffer[i] = result[i + 4];
-
+    // Copy to output buffer
+    std::memcpy(outputBuffer, result.data() + 4, readLength);
     return 0;
 }
 
@@ -652,7 +668,7 @@ void FeetechServo::convertIntTouint8_ts(uint8_t const& servoId, int const &value
 
 void FeetechServo::sendAndUpdateChecksum(uint8_t convertedValue[], uint8_t &checksum)
 {
-    this->serial->write_some(boost::asio::buffer(convertedValue, 2));
+    this->serial_->write_some(boost::asio::buffer(convertedValue, 2));
     checksum += convertedValue[0] + convertedValue[1];
 }
 
@@ -667,7 +683,7 @@ void FeetechServo::writeTargetPositions(uint8_t const &numberOfServos, const uin
     }
     uint8_t servoSpace = numberOfServos * 7 + 4;
     const std::vector<uint8_t> data = {0xFF, 0xFF, 0xFE, servoSpace, instruction::SYNCWRITE, STSRegisters::TARGET_POSITION, 6};
-    size_t ret = this->serial->write_some(boost::asio::buffer(data, data.size()));
+    size_t ret = this->serial_->write_some(boost::asio::buffer(data, data.size()));
     if (ret != data.size())
     {
         throw std::runtime_error("Failed to write to serial port.");
@@ -678,16 +694,16 @@ void FeetechServo::writeTargetPositions(uint8_t const &numberOfServos, const uin
     for (int index = 0; index < numberOfServos; index++)
     {
         checksum += servoIds[index];
-        this->serial->write_some(boost::asio::buffer(&servoIds[index], 1));
+        this->serial_->write_some(boost::asio::buffer(&servoIds[index], 1));
         uint8_t intAsuint8_t[2];
         convertIntTouint8_ts(servoIds[index], positions[index], intAsuint8_t);
         sendAndUpdateChecksum(intAsuint8_t, checksum);
-        this->serial->write_some(boost::asio::buffer(zeros, 2));
+        this->serial_->write_some(boost::asio::buffer(zeros, 2));
         convertIntTouint8_ts(servoIds[index], speeds[index], intAsuint8_t);
         sendAndUpdateChecksum(intAsuint8_t, checksum);
     }
     checksum = ~checksum;
-    this->serial->write_some(boost::asio::buffer(&checksum, 1));
+    this->serial_->write_some(boost::asio::buffer(&checksum, 1));
 }
 
 void FeetechServo::determineServoType(uint8_t const& servoId)
@@ -701,7 +717,7 @@ void FeetechServo::determineServoType(uint8_t const& servoId)
 
 int FeetechServo::writeCommand(const uint8_t *cmd, int cmd_length)
 {
-    std::size_t ret = this->serial->write_some(boost::asio::buffer(cmd, cmd_length));
+    std::size_t ret = this->serial_->write_some(boost::asio::buffer(cmd, cmd_length));
     return static_cast<int>(ret);
 }
 
