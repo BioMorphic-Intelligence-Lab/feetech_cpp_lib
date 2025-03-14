@@ -19,7 +19,7 @@ namespace instruction
     uint8_t const RESET      = 0x06;
 };
 
-FeetechServo::FeetechServo(std::string port, long const &baud, const double frequency, const std::vector<uint8_t>& servo_ids) : 
+FeetechServo::FeetechServo(std::string port, long const &baud, const double frequency, const std::vector<uint8_t>& servo_ids, bool debug) : 
     serial_(nullptr), 
     referencePositions_(servo_ids.size()),
     referenceVelocities_(servo_ids.size()),
@@ -31,6 +31,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     settings_.port = port;
     settings_.baud = baud;
     settings_.frequency = frequency;
+    settings_.debug = debug;
 
     for (size_t i = 0; i < servoIds_.size(); ++i) {
         idToIndex_[servoIds_[i]] = i;
@@ -50,8 +51,8 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
         homePositions_.push_back(0.0);
 
         gearRatios_.push_back(1.0); // From horn to output, i.e. if horn:output = 2:1, gear ratio is 2
-        operatingModes_.push_back(STSMode::POSITION); // Initialize in position mode
-        maxSpeeds_.push_back(2*M_PI); // 2*pi rad/s
+        operatingModes_.push_back(DriverMode::CONTINUOUS_POSITION); // Initialize in position mode
+        maxSpeeds_.push_back(5.0); // Observed max speed of servo at gear ratio 1
         servoType_.push_back(ServoType::UNKNOWN);
     }
 
@@ -69,7 +70,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     this->serial_->set_option(boost::asio::serial_port_base::parity(boost::asio::serial_port_base::parity::none));
     this->serial_->set_option(boost::asio::serial_port_base::stop_bits(boost::asio::serial_port_base::stop_bits::one));
 
-    writeMode(servoIds_[0], STSMode::VELOCITY);
+    writeMode(servoIds_[0], STSMode::STS_VELOCITY);
 
     // Read all data once to populate data structs
     bool success=false;
@@ -89,6 +90,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     int counter = 0;
     if (settings_.debug)
     {
+        std::cout<<"Settings.debug = " << settings_.debug << std::endl;
         while (true)
         {
             execute();
@@ -96,15 +98,16 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
             counter++;
             if (counter>50)
             {
-                std::cout<<"Setting reference position to 1.5 rad==================================="<<std::endl;
-                this->setReferencePosition(servoIds_[0], 1.5);
+                std::cout<<"Setting reference velocity to 0.4 rad/s==================================="<<std::endl;
+                this->setReferencePosition(servoIds_[0], 0.4);
             }
         }
     }
 
     else
     {
-        timer_ = std::make_unique<BoostTimer>(frequency, std::bind(&FeetechServo::execute, this));
+        timer_ = std::make_unique<BoostTimer>(frequency, 
+                                              std::bind(&FeetechServo::execute, this));
     }
     // Set all servos to velocity mode and torque enable
 }
@@ -128,7 +131,7 @@ bool FeetechServo::execute()
     for (size_t i = 0; i < servoIds_.size(); ++i)
     {
         // Position mode
-        if (operatingModes_[i] == STSMode::POSITION)
+        if (operatingModes_[i] == DriverMode::CONTINUOUS_POSITION)
         {
             // Calculate servo rads to go at the horn
             servo_rads_to_go = (referencePositions_[i].load(std::memory_order_relaxed) - currentPositions_[i])*gearRatios_[i];
@@ -149,10 +152,11 @@ bool FeetechServo::execute()
             }
         }
         // Velocity mode
-        else if (operatingModes_[i] == STSMode::VELOCITY)
+        else if (operatingModes_[i] == DriverMode::VELOCITY)
         {
             // Set target velocity
-            writeTargetVelocity(servoIds_[i], referenceVelocities_[i].load(), true);
+            double velocity = referenceVelocities_[i].load(std::memory_order_relaxed);
+            writeTargetVelocity(servoIds_[i], velocity, false);
         }
     }
 
@@ -191,6 +195,11 @@ bool FeetechServo::ping(uint8_t const &servoId)
 void FeetechServo::setDriverSettings(const DriverSettings& settings)
 {
     settings_ = settings;
+}
+
+DriverSettings FeetechServo::getDriverSettings() const
+{
+    return settings_;
 }
 
 bool FeetechServo::readAllServoData()
@@ -257,7 +266,8 @@ bool FeetechServo::setPositionOffset(uint8_t const &servoId, int const &position
 double FeetechServo::readCurrentPosition(uint8_t const &servoId)
 {
     // Calculate wrapped position at servo horn (in radians)
-    double previous_wrapped_position = wrap_to_2pi(currentPositions_[idToIndex_[servoId]]*gearRatios_[idToIndex_[servoId]]);
+    double previous_position = currentPositions_[idToIndex_[servoId]]*gearRatios_[idToIndex_[servoId]];
+    double previous_wrapped_position = wrap_to_2pi(previous_position);
     
     // Get current position at servo horn in radianss
     double position = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION)*RADIANS_PER_TICK;
@@ -280,7 +290,7 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
     }
     
     // Add change in position to previous absolute position and correct for gear ratio
-    currentPositions_[idToIndex_[servoId]] = (previous_wrapped_position + change_rads)/gearRatios_[idToIndex_[servoId]];
+    currentPositions_[idToIndex_[servoId]] = (previous_position + change_rads)/gearRatios_[idToIndex_[servoId]];
     return currentPositions_[idToIndex_[servoId]];
 }
 
@@ -384,12 +394,6 @@ bool FeetechServo::writeTargetPosition(uint8_t const &servoId, int const &positi
     return writeRegisters(servoId, STSRegisters::TARGET_POSITION, sizeof(params), params, asynchronous);
 }
 
-// If passing an int, assumes counts/s
-bool FeetechServo::writeTargetVelocity(uint8_t const &servoId, int const &velocity, bool const &asynchronous)
-{
-    return writeTwouint8_tsRegister(servoId, STSRegisters::RUNNING_SPEED, velocity, asynchronous);
-}
-
 // If passing a double, assumes rad/s
 bool FeetechServo::writeTargetVelocity(uint8_t const &servoId, double const &velocity, bool const &asynchronous)
 {
@@ -414,7 +418,7 @@ void FeetechServo::setReferencePosition(uint8_t const &servoId, double const &po
 
 void FeetechServo::setReferenceVelocity(uint8_t const &servoId, double const &velocity)
 {
-    referenceVelocities_[idToIndex_[servoId]].store(velocity);
+    referenceVelocities_[idToIndex_[servoId]].store(velocity, std::memory_order_relaxed);
 }
 
 void FeetechServo::setReferenceAcceleration(uint8_t const &servoId, double const &acceleration)
@@ -442,9 +446,64 @@ std::vector<double> FeetechServo::getCurrentCurrents()
     return currentCurrents_;
 }
 
-STSMode FeetechServo::getOperatingMode(uint8_t const &servoId)
+DriverMode FeetechServo::getOperatingMode(uint8_t const &servoId)
 {
     return operatingModes_[idToIndex_[servoId]];
+}
+
+void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mode)
+{
+    operatingModes_[idToIndex_[servoId]] = mode;
+}
+
+std::vector<DriverMode> FeetechServo::getOperatingModes()
+{
+    return operatingModes_;
+}
+
+void FeetechServo::setOperatingModes(std::vector<DriverMode> const &modes)
+{
+    operatingModes_ = modes;
+}
+
+double FeetechServo::getGearRatio(uint8_t const &servoId)
+{
+    return gearRatios_[idToIndex_[servoId]];
+}
+
+void FeetechServo::setGearRatio(uint8_t const &servoId, double const &ratio)
+{
+    gearRatios_[idToIndex_[servoId]] = ratio;
+}
+
+std::vector<double> FeetechServo::getGearRatios()
+{
+    return gearRatios_;
+}
+
+void FeetechServo::setGearRatios(std::vector<double> const &ratios)
+{
+    gearRatios_ = ratios;
+}
+
+double FeetechServo::getMaxSpeed(uint8_t const &servoId)
+{
+    return maxSpeeds_[idToIndex_[servoId]];
+}
+
+void FeetechServo::setMaxSpeed(uint8_t const &servoId, double const &speed)
+{
+    maxSpeeds_[idToIndex_[servoId]] = speed;
+}
+
+std::vector<double> FeetechServo::getMaxSpeeds()
+{
+    return maxSpeeds_;
+}
+
+void FeetechServo::setMaxSpeeds(std::vector<double> const &speeds)
+{
+    maxSpeeds_ = speeds;
 }
 
 bool FeetechServo::trigerAction()
@@ -746,5 +805,5 @@ int FeetechServo::writeCommand(const uint8_t *cmd, int cmd_length)
 }
 
 double FeetechServo::wrap_to_2pi(double angle_rad) {
-    return atan2(sin(angle_rad), cos(angle_rad));
+    return atan2(sin(angle_rad), cos(angle_rad))+M_PI;
 }

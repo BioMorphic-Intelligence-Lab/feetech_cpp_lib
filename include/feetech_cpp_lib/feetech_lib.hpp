@@ -69,10 +69,19 @@ namespace STSRegisters
     uint8_t const CURRENT_CURRENT          = 0x45;
 };
 
-enum STSMode{
+enum DriverMode{
     POSITION = 0,
     VELOCITY = 1,
-    STEP = 3
+    PWM = 2,
+    STEP = 3,
+    CONTINUOUS_POSITION = 4
+};
+
+enum STSMode{
+    STS_POSITION = 0,
+    STS_VELOCITY = 1,
+    STS_PWM = 2,
+    STS_STEP = 3
 };
 
 enum ServoType
@@ -110,7 +119,7 @@ public:
     /// \param baud Baud rate, default 1Mbps
     /// \param frequency Frequency of the servo driver loop, default 250 Hz
     /// \param servoIds IDs of servos to control, default 1
-    FeetechServo(std::string port="/dev/ttyUSB0", long const &baud=1000000, const double frequency=250, const std::vector<uint8_t>& servo_ids = {1});
+    FeetechServo(std::string port="/dev/ttyUSB0", long const &baud=1000000, const double frequency=250, const std::vector<uint8_t>& servo_ids = {1}, bool debug = false);
 
 
     /// \brief Destructor. Close the serial port.
@@ -199,14 +208,6 @@ public:
     /// \param[in] asynchronous If set, write is asynchronous (ACTION must be send to activate)
     /// \return True on success, false otherwise.
     bool writeTargetPosition(uint8_t const &servoId, int const &position, int const &speed = 4095, bool const &asynchronous = false);
-
-    /// \brief Set target servo velocity.
-    /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
-    /// \param[in] servoId ID of the servo
-    /// \param[in] velocity Target velocity, in counts/s.
-    /// \param[in] asynchronous If set, write is asynchronous (ACTION must be send to activate)
-    /// \return True on success, false otherwise.
-    bool writeTargetVelocity(uint8_t const &servoId, int const &velocity, bool const &asynchronous = false);
 
     /// \brief Set target servo velocity in rad/s.
     /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
@@ -299,7 +300,61 @@ public:
     
     std::vector<double> getCurrentCurrents();
 
-    STSMode getOperatingMode(uint8_t const &servoId);
+    // Operating modes
+    DriverMode getOperatingMode(uint8_t const &servoId);
+
+    void setOperatingMode(uint8_t const &servoId, DriverMode const &mode);
+
+    std::vector<DriverMode> getOperatingModes();
+
+    void setOperatingModes(std::vector<DriverMode> const &modes);
+
+    // Gear ratios
+    double getGearRatio(uint8_t const &servoId);
+
+    void setGearRatio(uint8_t const &servoId, double const &ratio);
+
+    std::vector<double> getGearRatios();
+
+    void setGearRatios(std::vector<double> const &ratios);
+    
+    // Max speeds
+    double getMaxSpeed(uint8_t const &servoId);
+
+    void setMaxSpeed(uint8_t const &servoId, double const &speed);
+
+    std::vector<double> getMaxSpeeds();
+
+    void setMaxSpeeds(std::vector<double> const &speeds);
+
+    // Proportional gains
+    double getProportionalGain(uint8_t const &servoId);
+
+    void setProportionalGain(uint8_t const &servoId, double const &gain);
+
+    std::vector<double> getProportionalGains();
+
+    void setProportionalGains(std::vector<double> const &gains);
+
+    // Derivative gains
+    double getDerivativeGain(uint8_t const &servoId);
+
+    void setDerivativeGain(uint8_t const &servoId, double const &gain);
+
+    std::vector<double> getDerivativeGains();
+
+    void setDerivativeGains(std::vector<double> const &gains);
+
+    // Integral gains
+    double getIntegralGain(uint8_t const &servoId);
+
+    void setIntegralGain(uint8_t const &servoId, double const &gain);
+
+    std::vector<double> getIntegralGains();
+
+    void setIntegralGains(std::vector<double> const &gains);
+
+
 
 
 private:
@@ -400,7 +455,7 @@ private:
     std::vector<double> homePositions_;
 
     // Servo settings
-    std::vector<STSMode> operatingModes_;
+    std::vector<DriverMode> operatingModes_;
     std::vector<double> maxSpeeds_;
 
     std::vector<ServoType> servoType_; // Map of servo types - STS/SCS servos have slightly different protocol.
