@@ -95,11 +95,10 @@ struct DriverSettings
     long baud = 1000000;
     double frequency = 100;
     UNITS unit = RAD;
-    double max_speed = 6.28319; // TODO: specify per servo
     int max_servos = 35;
-    STSMode mode = STSMode::POSITION; // TODO: specify per servo
     double position_tolerance = 0.01; // rad
     int tx_time_per_byte = 1000./(float)baud*10; // 10 bits per byte for some overhead
+    bool debug = false;
 };
 
 /// \brief Driver for STS servos, using UART
@@ -113,6 +112,10 @@ public:
     /// \param servoIds IDs of servos to control, default 1
     FeetechServo(std::string port="/dev/ttyUSB0", long const &baud=1000000, const double frequency=250, const std::vector<uint8_t>& servo_ids = {1});
 
+
+    /// \brief Destructor. Close the serial port.
+    ~FeetechServo();
+    
     /// \brief Execute the servo driver loop (to be called in the timer)
     /// \returns True on success
     bool execute();
@@ -157,7 +160,7 @@ public:
     bool readAllCurrentTemperatures();
     bool readAllCurrentCurrents(); 
 
-    /// \brief Get current servo position.
+    /// \brief Get current servo position at output.
     /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
     /// \param[in] servoId ID of the servo
     /// \return Position, in rad, -1 on read failure, -2 on servo type failure.
@@ -200,6 +203,14 @@ public:
     /// \param[in] asynchronous If set, write is asynchronous (ACTION must be send to activate)
     /// \return True on success, false otherwise.
     bool writeTargetVelocity(uint8_t const &servoId, int const &velocity, bool const &asynchronous = false);
+
+    /// \brief Set target servo velocity in rad/s.
+    /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
+    /// \param[in] servoId ID of the servo
+    /// \param[in] velocity Target velocity, in rad/s.
+    /// \param[in] asynchronous If set, write is asynchronous (ACTION must be send to activate)
+    /// \return True on success, false otherwise.
+    bool writeTargetVelocity(uint8_t const &servoId, double const &velocity, bool const &asynchronous= false);
 
     /// \brief Change the target acceleration of a servo.
     /// \param[in] servoId servo ID
@@ -284,7 +295,7 @@ public:
     
     std::vector<double> getCurrentCurrents();
 
-    STSMode getOperatingMode();
+    STSMode getOperatingMode(uint8_t const &servoId);
 
 
 private:
@@ -384,8 +395,13 @@ private:
     std::vector<double> currentCurrents_;
     std::vector<double> homePositions_;
 
+    // Servo settings
+    std::vector<STSMode> operatingModes_;
+    std::vector<double> maxSpeeds_;
+
     std::vector<ServoType> servoType_; // Map of servo types - STS/SCS servos have slightly different protocol.
 
     DriverSettings settings_;
 };
+
 #endif
