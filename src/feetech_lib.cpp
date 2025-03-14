@@ -614,7 +614,7 @@ int FeetechServo::receiveMessage(uint8_t const& servoId,
         return -1;
     }
 
-    if (read_ec || bytes_read != (readLength + 5)) {
+    if (read_ec || bytes_read != uint8_t(readLength + 5)) {
         std::cout << "Error during serial read\n";
         return -2;
     }
