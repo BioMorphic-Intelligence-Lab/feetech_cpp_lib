@@ -147,6 +147,10 @@ public:
     /// @param settings 
     void setDriverSettings(const DriverSettings& settings);
 
+    /// @brief Get current driver settings.
+    /// @return Current driver settings.
+    DriverSettings getDriverSettings() const;
+
     /****************************************************************************************/
     /********************************* DATA GETTERS *****************************************/
     /****************************************************************************************/

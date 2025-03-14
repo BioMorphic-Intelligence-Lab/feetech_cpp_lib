@@ -28,6 +28,10 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     // Write servo IDs to member data structure
     servoIds_ = servo_ids;
 
+    settings_.port = port;
+    settings_.baud = baud;
+    settings_.frequency = frequency;
+
     for (size_t i = 0; i < servoIds_.size(); ++i) {
         idToIndex_[servoIds_[i]] = i;
         
