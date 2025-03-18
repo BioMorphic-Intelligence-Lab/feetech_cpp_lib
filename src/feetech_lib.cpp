@@ -37,7 +37,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
         idToIndex_[servoIds_[i]] = i;
         
         proportionalGains_.push_back(3.0);
-        derivativeGains_.push_back(1.0);
+        derivativeGains_.push_back(0.0);
         integralGains_.push_back(0.0);
 
         referencePositions_[i].store(0);  // Default constructs std::atomic<double>
@@ -84,10 +84,11 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
             exit(-1);
         }
     }
-    // Set servos to velocity and home
+    // Set servos to velocity at velocity 0 and home
     for (size_t i = 0; i < servoIds_.size(); ++i)
     {
         setHomePosition(servoIds_[i]);
+        writeTargetVelocity(servoIds_[i], 0, false);
         writeMode(servoIds_[i], STSMode::STS_VELOCITY);
     }
 
@@ -108,9 +109,10 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
             }
         }
     }
-
+    
     else
     {
+        std::cout << "Starting timer "<< std::endl;
         timer_ = std::make_unique<BoostTimer>(frequency, 
                                               std::bind(&FeetechServo::execute, this));
     }
@@ -144,8 +146,8 @@ bool FeetechServo::execute()
             // Calculate servo rads to go at the horn
             servo_rads_to_go = (referencePositions_[i].load(std::memory_order_relaxed) - currentPositions_[i])*gearRatios_[i];
 
-            velocity_ref = std::clamp(proportionalGains_[i]*servo_rads_to_go - derivativeGains_[i]*currentVelocities_[i]*gearRatios_[i],
-                -maxSpeeds_[i]*gearRatios_[i], maxSpeeds_[i]*gearRatios_[i]);
+            velocity_ref = std::clamp(proportionalGains_[i]*servo_rads_to_go - derivativeGains_[i]*currentVelocities_[i]*directions_[i],
+                -maxSpeeds_[i], maxSpeeds_[i]);
 
             // Set target speed
             if (fabs(servo_rads_to_go)<settings_.position_tolerance)
@@ -156,7 +158,7 @@ bool FeetechServo::execute()
             else
             {
                 // Set target velocity
-                writeTargetVelocity(servoIds_[i], velocity_ref*gearRatios_[i], false);
+                writeTargetVelocity(servoIds_[i], velocity_ref, false);
             }
         }
         // Velocity mode
@@ -168,7 +170,6 @@ bool FeetechServo::execute()
             writeTargetVelocity(servoIds_[i], velocity, false);
         }
     }
-
     return true;
 }
 
@@ -285,15 +286,19 @@ bool FeetechServo::setPositionOffset(uint8_t const &servoId, int const &position
 double FeetechServo::readCurrentPosition(uint8_t const &servoId)
 {
     // Calculate wrapped position at servo horn (in radians)
-    double previous_absolute_position = currentPositions_[idToIndex_[servoId]]*gearRatios_[idToIndex_[servoId]] + homePositions_[idToIndex_[servoId]];
+    double previous_absolute_position = (currentPositions_[idToIndex_[servoId]] + homePositions_[idToIndex_[servoId]]);
     double previous_wrapped_absolute_position = wrap_to_2pi(previous_absolute_position);
     
     // Get current position at servo horn in radians
-    double absolute_position = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION)*RADIANS_PER_TICK;
+    int16_t absolute_position_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION);
+    double absolute_position_rad = absolute_position_ticks*RADIANS_PER_TICK;
 
-    if (absolute_position==0)
+    // error
+    if (absolute_position_ticks==-1 || absolute_position_ticks==-2)
+    {
         return -1;
-    double position_diff = absolute_position - previous_wrapped_absolute_position;
+    }
+    double position_diff = absolute_position_rad - previous_wrapped_absolute_position;
     double change_rads;
 
     if (position_diff > 5.5) // 5.5 is a threshold value over which we assume the servo has wrapped around
@@ -310,7 +315,7 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
     }
     
     // Add change in position to previous absolute position and correct for gear ratio, then recenter on home
-    currentPositions_[idToIndex_[servoId]] = (previous_absolute_position + change_rads)/gearRatios_[idToIndex_[servoId]] - homePositions_[idToIndex_[servoId]];
+    currentPositions_[idToIndex_[servoId]] = (previous_absolute_position - homePositions_[idToIndex_[servoId]] + change_rads)/gearRatios_[idToIndex_[servoId]];
     return currentPositions_[idToIndex_[servoId]];
 }
 
@@ -363,7 +368,7 @@ bool FeetechServo::readAllCurrentSpeeds()
         if (velocity == -1 || velocity == -2) // TODO: Do something about the error codes, the velocity can actually be -1 or -2 rad/s, 
         //although this would be very unlikely
         {
-            std::cerr << "\033[31m" << "[ERROR] Failed to read all speeds (vel == -1 or -2)" << "\033[0m" << std::endl;
+            std::cerr << "\033[31m" << "[ERROR] Failed to read all speeds (vel == -1 or -2) for ID %i" << servoIds_[i] << "\033[0m" << std::endl;
             ret = false;
         }
     }
@@ -426,7 +431,7 @@ bool FeetechServo::writeTargetPosition(uint8_t const &servoId, int const &positi
 // If passing a double, assumes rad/s
 bool FeetechServo::writeTargetVelocity(uint8_t const &servoId, double const &velocity, bool const &asynchronous)
 {
-    int velocity_ticks = static_cast<int>(velocity * TICKS_PER_RADIAN * gearRatios_[idToIndex_[servoId]] * directions_[idToIndex_[servoId]]);
+    int velocity_ticks = static_cast<int>(velocity * TICKS_PER_RADIAN * gearRatios_[idToIndex_[servoId]]);
     return writeTwouint8_tsRegister(servoId, STSRegisters::RUNNING_SPEED, velocity_ticks, asynchronous);
 }
 
@@ -447,7 +452,7 @@ void FeetechServo::setReferencePosition(uint8_t const &servoId, double const &po
 
 void FeetechServo::setReferenceVelocity(uint8_t const &servoId, double const &velocity)
 {
-    referenceVelocities_[idToIndex_[servoId]].store(velocity, std::memory_order_relaxed);
+    referenceVelocities_[idToIndex_[servoId]].store(velocity * directions_[idToIndex_[servoId]], std::memory_order_relaxed);
 }
 
 void FeetechServo::setReferenceAcceleration(uint8_t const &servoId, double const &acceleration)
@@ -542,6 +547,9 @@ double FeetechServo::getHomePosition(uint8_t const &servoId)
 
 void FeetechServo::setHomePosition(uint8_t const &servoId)
 {
+    // Get current position
+    readCurrentPosition(servoId);
+
     homePositions_[idToIndex_[servoId]] = homePositions_[idToIndex_[servoId]] + currentPositions_[idToIndex_[servoId]];
 
     // Adjust reference position to current position to make sure servos don't move when setting home
@@ -789,7 +797,7 @@ int FeetechServo::receiveMessage(uint8_t const& servoId,
     io_context_->run();
 
     if (timer_expired) {
-        std::cout << "Timeout while reading serial\n";
+        std::cout << "Timeout while reading serial " << serial_timeout_ms << "ms\n";
         return -1;
     }
 
@@ -889,8 +897,10 @@ void FeetechServo::writeTargetPositions(uint8_t const &numberOfServos, const uin
 
 void FeetechServo::determineServoType(uint8_t const& servoId)
 {
-    switch(readRegister(servoId, STSRegisters::SERVO_MAJOR))
+    uint8_t response = readRegister(servoId, STSRegisters::SERVO_MAJOR);
+    switch(response)
     {
+        case 10: servoType_[idToIndex_[servoId]] = ServoType::STS; break; // STS3025BL has type 10 for some reason
         case 9: servoType_[idToIndex_[servoId]] = ServoType::STS; break;
         case 5: servoType_[idToIndex_[servoId]] = ServoType::SCS; break;
     }
@@ -903,5 +913,7 @@ int FeetechServo::writeCommand(const uint8_t *cmd, int cmd_length)
 }
 
 double FeetechServo::wrap_to_2pi(double angle_rad) {
-    return atan2(sin(angle_rad), cos(angle_rad))+M_PI;
+    //return atan2(sin(angle_rad), cos(angle_rad))+M_PI; singularity at 0
+    double twoPi = 2*M_PI;
+    return angle_rad - twoPi*std::floor(angle_rad/twoPi);
 }
