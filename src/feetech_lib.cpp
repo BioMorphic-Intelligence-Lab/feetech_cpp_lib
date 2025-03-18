@@ -70,8 +70,6 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     this->serial_->set_option(boost::asio::serial_port_base::parity(boost::asio::serial_port_base::parity::none));
     this->serial_->set_option(boost::asio::serial_port_base::stop_bits(boost::asio::serial_port_base::stop_bits::one));
 
-    writeMode(servoIds_[0], STSMode::STS_VELOCITY);
-
     // Read all data once to populate data structs
     bool success=false;
     int fail_counter = 0;
@@ -84,6 +82,11 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
             std::cerr << "\033[31m" << "[ERROR] Failed to read all servo data for 10 attempts. Are all servos connected?" << "\033[0m" << std::endl;
             exit(-1);
         }
+    }
+    // Set servos to velocity
+    for (size_t i = 0; i < servoIds_.size(); ++i)
+    {
+        writeMode(servoIds_[i], STSMode::STS_VELOCITY);
     }
 
     // Emulating the timer here because if it runs in the other thread I cannot see the output
@@ -173,6 +176,15 @@ bool FeetechServo::close()
         return true;
     }
     return false;
+}
+
+bool FeetechServo::stopAll()
+{
+    for (size_t i = 0; i < servoIds_.size(); ++i)
+    {
+        writeTargetVelocity(servoIds_[i], 0, false);
+    }
+    return true;
 }
 
 bool FeetechServo::ping(uint8_t const &servoId)

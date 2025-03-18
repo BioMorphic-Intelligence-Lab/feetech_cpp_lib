@@ -139,6 +139,10 @@ public:
     /// \return True on success
     bool close();
 
+    /// \brief Stop all servos, sets velocity to 0
+    /// \return True on success
+    bool stopAll();
+
     /// \brief Change the ID of a servo.
     /// \note If the desired ID is already taken, this function does nothing and returns false.
     /// \param[in] oldServoId old servo ID
