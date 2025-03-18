@@ -281,14 +281,14 @@ bool FeetechServo::setPositionOffset(uint8_t const &servoId, int const &position
 double FeetechServo::readCurrentPosition(uint8_t const &servoId)
 {
     // Calculate wrapped position at servo horn (in radians)
-    double previous_position = currentPositions_[idToIndex_[servoId]]*gearRatios_[idToIndex_[servoId]];
-    double previous_wrapped_position = wrap_to_2pi(previous_position);
+    double previous_absolute_position = currentPositions_[idToIndex_[servoId]]*gearRatios_[idToIndex_[servoId]] + homePositions_[idToIndex_[servoId]];
+    double previous_wrapped_absolute_position = wrap_to_2pi(previous_absolute_position);
     
     // Get current position at servo horn in radianss
-    double position = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION)*RADIANS_PER_TICK;
-    if (position==0)
+    double absolute_position = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION)*RADIANS_PER_TICK;
+    if (absolute_position==0)
         return 0;
-    double position_diff = position - previous_wrapped_position;
+    double position_diff = absolute_position - previous_wrapped_absolute_position;
     double change_rads;
 
     if (position_diff > 5.5) // 5.5 is a threshold value over which we assume the servo has wrapped around
@@ -304,8 +304,8 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
         change_rads = position_diff;
     }
     
-    // Add change in position to previous absolute position and correct for gear ratio
-    currentPositions_[idToIndex_[servoId]] = (previous_position + change_rads)/gearRatios_[idToIndex_[servoId]];
+    // Add change in position to previous absolute position and correct for gear ratio, then recenter on home
+    currentPositions_[idToIndex_[servoId]] = (previous_absolute_position + change_rads)/gearRatios_[idToIndex_[servoId]] - homePositions_[idToIndex_[servoId]];
     return currentPositions_[idToIndex_[servoId]];
 }
 
@@ -530,8 +530,12 @@ void FeetechServo::setHomePosition(uint8_t const &servoId)
 {
     homePositions_[idToIndex_[servoId]] = currentPositions_[idToIndex_[servoId]];
 
-    // TODO: Adjust reference positions to make sure servos don't move when setting home
-    // referencePositions_[idToIndex_[servoId]].store(currentPositions_[idToIndex_[servoId]);
+    // Adjust reference position to current position to make sure servos don't move when setting home
+    referencePositions_[idToIndex_[servoId]].store(0.0, std::memory_order_relaxed);
+
+    // Adjust current position to account for home position
+    currentPositions_[idToIndex_[servoId]] = 0.0;
+
     // TODO: Add setting home in servo registers when mode == POSITION  (i.e. not CONTINUOUS_POSITION)
 }
 
@@ -545,8 +549,11 @@ void FeetechServo::setHomePositions()
     for (size_t i = 0; i < servoIds_.size(); ++i)
     {
         homePositions_[i] = currentPositions_[i];
+        // Set reference positions to 
+        referencePositions_[i].store(0.0, std::memory_order_relaxed);
+        currentPositions_[i] = 0.0;
     }
-    // TODO: Adjust reference positions to make sure servos don't move when setting home
+    // TODO: make current servo data structs atomic because when setting home they can be written by other threads.
     // TODO: Add setting home in servo registers when mode == POSITION  (i.e. not CONTINUOUS_POSITION)
 }
 

@@ -336,7 +336,8 @@ public:
     /// @return Absolute home position in radians
     double getHomePosition(uint8_t const &servoId);
 
-    /// @brief Set the current position as servo home position
+    /// @brief Set the current position as servo home position. Adjust current positions and reference positions 
+    ///         to account for new home.
     /// @param[in] servoId ID of the servo
     void setHomePosition(uint8_t const &servoId);
 
@@ -344,7 +345,8 @@ public:
     /// @return Vector of home positions in radians.
     std::vector<double> getHomePositions();
 
-    /// @brief Set the current positions for all servos as their home positions.
+    /// @brief Set the current positions for all servos as their home positions. Adjust current positions and reference positions
+    ///         to account for new home.
     void setHomePositions();
 
     // Proportional gains
