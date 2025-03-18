@@ -287,8 +287,9 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
     double previous_absolute_position = currentPositions_[idToIndex_[servoId]]*gearRatios_[idToIndex_[servoId]] + homePositions_[idToIndex_[servoId]];
     double previous_wrapped_absolute_position = wrap_to_2pi(previous_absolute_position);
     
-    // Get current position at servo horn in radianss
+    // Get current position at servo horn in radians
     double absolute_position = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION)*RADIANS_PER_TICK;
+
     if (absolute_position==0)
         return -1;
     double position_diff = absolute_position - previous_wrapped_absolute_position;
@@ -343,7 +344,7 @@ double FeetechServo::readCurrentSpeed(uint8_t const &servoId)
     else if (velocity_ticks == -2)
         return -2;
     
-    double velocity_rads = velocity_ticks*RADIANS_PER_TICK/gearRatios_[idToIndex_[servoId]];
+    double velocity_rads = velocity_ticks*RADIANS_PER_TICK/gearRatios_[idToIndex_[servoId]]*directions_[idToIndex_[servoId]];
     currentVelocities_[idToIndex_[servoId]] = velocity_rads;
     return velocity_rads;
 }
@@ -424,7 +425,7 @@ bool FeetechServo::writeTargetPosition(uint8_t const &servoId, int const &positi
 // If passing a double, assumes rad/s
 bool FeetechServo::writeTargetVelocity(uint8_t const &servoId, double const &velocity, bool const &asynchronous)
 {
-    int velocity_ticks = static_cast<int>(velocity * TICKS_PER_RADIAN);
+    int velocity_ticks = static_cast<int>(velocity * TICKS_PER_RADIAN * gearRatios_[idToIndex_[servoId]] * directions_[idToIndex_[servoId]]);
     return writeTwouint8_tsRegister(servoId, STSRegisters::RUNNING_SPEED, velocity_ticks, asynchronous);
 }
 
@@ -567,6 +568,39 @@ void FeetechServo::setHomePositions()
     }
     // TODO: make current servo data structs atomic because when setting home they can be written by other threads.
     // TODO: Add setting home in servo registers when mode == POSITION  (i.e. not CONTINUOUS_POSITION)
+}
+
+int FeetechServo::getVelocityDirection(uint8_t const &servoId)
+{
+    return directions_[idToIndex_[servoId]];
+}
+
+void FeetechServo::setVelocityDirection(uint8_t const &servoId, int const &direction)
+{
+    if (direction != 1 && direction != -1)
+    {
+        std::cerr << "\033[31m" << "[ERROR] Direction must be 1 for default and -1 for inverted. Keeping old direction." << "\033[0m" << std::endl;
+        return;
+    }
+    directions_[idToIndex_[servoId]] = direction;
+}
+
+std::vector<int> FeetechServo::getVelocityDirections()
+{
+    return directions_;
+}
+
+void FeetechServo::setVelocityDirections(std::vector<int> const &directions)
+{
+    for (size_t i = 0; i < directions.size(); ++i)
+    {
+        if (directions[i] != 1 && directions[i] != -1)
+        {
+            std::cerr << "\033[31m" << "[ERROR] Direction must be 1 for default and -1 for inverted. Keeping old directions." << "\033[0m" << std::endl;
+            return;
+        }
+    }
+    directions_ = directions;
 }
 
 bool FeetechServo::trigerAction()

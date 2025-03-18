@@ -349,6 +349,14 @@ public:
     ///         to account for new home.
     void setHomePositions();
 
+    int getVelocityDirection(uint8_t const &servoId);
+
+    void setVelocityDirection(uint8_t const &servoId, int const &direction);
+
+    std::vector<int> getVelocityDirections();
+
+    void setVelocityDirections(std::vector<int> const &directions);
+
     // Proportional gains
     double getProportionalGain(uint8_t const &servoId);
 
