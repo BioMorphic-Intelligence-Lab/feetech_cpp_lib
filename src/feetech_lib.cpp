@@ -163,7 +163,8 @@ bool FeetechServo::execute()
         else if (operatingModes_[i] == DriverMode::VELOCITY)
         {
             // Set target velocity
-            double velocity = referenceVelocities_[i].load(std::memory_order_relaxed);
+            double velocity = std::clamp(referenceVelocities_[i].load(std::memory_order_relaxed)/gearRatios_[i],
+                -maxSpeeds_[i], maxSpeeds_[i]);
             writeTargetVelocity(servoIds_[i], velocity, false);
         }
     }
