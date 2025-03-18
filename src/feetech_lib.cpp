@@ -52,6 +52,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
 
         gearRatios_.push_back(1.0); // From horn to output, i.e. if horn:output = 2:1, gear ratio is 2
         operatingModes_.push_back(DriverMode::CONTINUOUS_POSITION); // Initialize in position mode
+        directions_.push_back(1); // Default direction is 1
         maxSpeeds_.push_back(5.0); // Observed max speed of servo at gear ratio 1
         servoType_.push_back(ServoType::UNKNOWN);
     }
@@ -83,9 +84,10 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
             exit(-1);
         }
     }
-    // Set servos to velocity
+    // Set servos to velocity and home
     for (size_t i = 0; i < servoIds_.size(); ++i)
     {
+        setHomePosition(servoIds_[i]);
         writeMode(servoIds_[i], STSMode::STS_VELOCITY);
     }
 
@@ -262,6 +264,7 @@ bool FeetechServo::setId(uint8_t const &oldServoId, uint8_t const &newServoId)
     return ping(newServoId);
 }
 
+// TODO: Deprecate this function when implementing position based control and more advanced homing
 bool FeetechServo::setPositionOffset(uint8_t const &servoId, int const &positionOffset)
 {
     if (!writeRegister(servoId, STSRegisters::WRITE_LOCK, 0))
@@ -516,6 +519,35 @@ std::vector<double> FeetechServo::getMaxSpeeds()
 void FeetechServo::setMaxSpeeds(std::vector<double> const &speeds)
 {
     maxSpeeds_ = speeds;
+}
+
+double FeetechServo::getHomePosition(uint8_t const &servoId)
+{
+    return homePositions_[idToIndex_[servoId]];
+}
+
+void FeetechServo::setHomePosition(uint8_t const &servoId)
+{
+    homePositions_[idToIndex_[servoId]] = currentPositions_[idToIndex_[servoId]];
+
+    // TODO: Adjust reference positions to make sure servos don't move when setting home
+    // referencePositions_[idToIndex_[servoId]].store(currentPositions_[idToIndex_[servoId]);
+    // TODO: Add setting home in servo registers when mode == POSITION  (i.e. not CONTINUOUS_POSITION)
+}
+
+std::vector<double> FeetechServo::getHomePositions()
+{
+    return homePositions_;
+}
+
+void FeetechServo::setHomePositions()
+{
+    for (size_t i = 0; i < servoIds_.size(); ++i)
+    {
+        homePositions_[i] = currentPositions_[i];
+    }
+    // TODO: Adjust reference positions to make sure servos don't move when setting home
+    // TODO: Add setting home in servo registers when mode == POSITION  (i.e. not CONTINUOUS_POSITION)
 }
 
 bool FeetechServo::trigerAction()

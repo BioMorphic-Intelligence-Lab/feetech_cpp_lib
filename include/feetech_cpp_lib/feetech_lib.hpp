@@ -331,6 +331,22 @@ public:
 
     void setMaxSpeeds(std::vector<double> const &speeds);
 
+    /// @brief Get the reference position for a servo.
+    /// @param[in] servoId ID of the servo
+    /// @return Absolute home position in radians
+    double getHomePosition(uint8_t const &servoId);
+
+    /// @brief Set the current position as servo home position
+    /// @param[in] servoId ID of the servo
+    void setHomePosition(uint8_t const &servoId);
+
+    /// @brief Get the home positions for all servos.
+    /// @return Vector of home positions in radians.
+    std::vector<double> getHomePositions();
+
+    /// @brief Set the current positions for all servos as their home positions.
+    void setHomePositions();
+
     // Proportional gains
     double getProportionalGain(uint8_t const &servoId);
 
@@ -461,6 +477,7 @@ private:
     // Servo settings
     std::vector<DriverMode> operatingModes_;
     std::vector<double> maxSpeeds_;
+    std::vector<int> directions_;
 
     std::vector<ServoType> servoType_; // Map of servo types - STS/SCS servos have slightly different protocol.
 
