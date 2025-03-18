@@ -99,7 +99,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
         while (true)
         {
             execute();
-            std::this_thread::sleep_for(std::chrono::milliseconds(10)); // sleep one second
+            std::this_thread::sleep_for(std::chrono::milliseconds(100)); // sleep one second
             counter++;
             if (counter>50)
             {
@@ -120,8 +120,11 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
 FeetechServo::~FeetechServo()
 {
     // Set velocity to zero
-    writeTargetVelocity(servoIds_[0], 0, false);
+    stopAll();
+    // Close serial port
     close();
+    // Delete serial port and io_context
+    delete this->serial_;
     delete this->io_context_;
 }
 
@@ -287,7 +290,7 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
     // Get current position at servo horn in radianss
     double absolute_position = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION)*RADIANS_PER_TICK;
     if (absolute_position==0)
-        return 0;
+        return -1;
     double position_diff = absolute_position - previous_wrapped_absolute_position;
     double change_rads;
 
@@ -319,8 +322,11 @@ bool FeetechServo::readAllCurrentPositions()
     {
         position = readCurrentPosition(servoIds_[i]);
         // If 0 is returned, position is not read correctly, so return value of function becomes false
-        if (position == 0)
+        if (position == -1)
+        {
+            std::cerr << "\033[31m" << "[ERROR] Failed to read all positions (pos == -1)" << "\033[0m" << std::endl;
             ret = false;
+        }
     }
     return ret;
 }
@@ -354,7 +360,10 @@ bool FeetechServo::readAllCurrentSpeeds()
         // If -1 or -2 is returned, velocity is not read correctly, so return value of function becomes false
         if (velocity == -1 || velocity == -2) // TODO: Do something about the error codes, the velocity can actually be -1 or -2 rad/s, 
         //although this would be very unlikely
+        {
+            std::cerr << "\033[31m" << "[ERROR] Failed to read all speeds (vel == -1 or -2)" << "\033[0m" << std::endl;
             ret = false;
+        }
     }
     return ret;
 }
@@ -388,7 +397,10 @@ bool FeetechServo::readAllCurrentCurrents()
         current = readCurrentCurrent(servoIds_[i]);
         // If 0 is returned, velocity is not read correctly, so return value of function becomes false
         if (current == -1 || current == -2)
+        {
+            std::cerr << "\033[31m" << "[ERROR] Failed to read all currents (current == -1 or -2)" << "\033[0m" << std::endl;
             ret = false;
+        }
     }
     return ret;
 }
@@ -528,7 +540,7 @@ double FeetechServo::getHomePosition(uint8_t const &servoId)
 
 void FeetechServo::setHomePosition(uint8_t const &servoId)
 {
-    homePositions_[idToIndex_[servoId]] = currentPositions_[idToIndex_[servoId]];
+    homePositions_[idToIndex_[servoId]] = homePositions_[idToIndex_[servoId]] + currentPositions_[idToIndex_[servoId]];
 
     // Adjust reference position to current position to make sure servos don't move when setting home
     referencePositions_[idToIndex_[servoId]].store(0.0, std::memory_order_relaxed);
@@ -548,7 +560,7 @@ void FeetechServo::setHomePositions()
 {
     for (size_t i = 0; i < servoIds_.size(); ++i)
     {
-        homePositions_[i] = currentPositions_[i];
+        homePositions_[i] = currentPositions_[i] + homePositions_[i];
         // Set reference positions to 
         referencePositions_[i].store(0.0, std::memory_order_relaxed);
         currentPositions_[i] = 0.0;
