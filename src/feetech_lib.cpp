@@ -591,7 +591,11 @@ void FeetechServo::setVelocityDirection(uint8_t const &servoId, int const &direc
         std::cerr << "\033[31m" << "[ERROR] Direction must be 1 for default and -1 for inverted. Keeping old direction." << "\033[0m" << std::endl;
         return;
     }
+    // set direction
     directions_[idToIndex_[servoId]] = direction;
+
+    // update reference velocity
+    referenceVelocities_[idToIndex_[servoId]].store(referenceVelocities_[idToIndex_[servoId]].load(std::memory_order_relaxed) * direction, std::memory_order_relaxed);
 }
 
 std::vector<int> FeetechServo::getVelocityDirections()
@@ -609,7 +613,14 @@ void FeetechServo::setVelocityDirections(std::vector<int> const &directions)
             return;
         }
     }
+    // set directions
     directions_ = directions;
+
+    // update reference velocities
+    for (size_t i = 0; i < directions.size(); ++i)
+    {
+        referenceVelocities_[i].store(referenceVelocities_[i].load(std::memory_order_relaxed) * directions[i], std::memory_order_relaxed);
+    }
 }
 
 bool FeetechServo::trigerAction()
