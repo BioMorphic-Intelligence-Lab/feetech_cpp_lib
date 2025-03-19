@@ -461,6 +461,11 @@ private:
     /// @return Wrapped angle in radians
     double wrap_to_2pi(double angle_rad);
 
+    /// @brief Wrap angle to -pi to pi
+    /// @param[in] angle_rad Angle in radians
+    /// @return Wrapped angle in radians
+    double wrap_to_pi(double angle_rad);
+
     boost::asio::io_context* io_context_;
     boost::asio::serial_port* serial_;
 
@@ -470,6 +475,7 @@ private:
     std::vector<uint8_t> servoIds_; // IDs of servos to control
     std::unordered_map<int, size_t> idToIndex_; // Map of servo IDs to index in servoIds_
     std::vector<double> gearRatios_;
+    std::vector<double> previousHornPositions_;
     std::vector<double> proportionalGains_;
     std::vector<double> derivativeGains_;
     std::vector<double> integralGains_;

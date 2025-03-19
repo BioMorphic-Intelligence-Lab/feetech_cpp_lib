@@ -43,7 +43,8 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
         referencePositions_[i].store(0);  // Default constructs std::atomic<double>
         referenceVelocities_[i].store(0);
         referenceAccelerations_[i].store(0);
-
+        
+        previousHornPositions_.push_back(0.0);
         currentPositions_.push_back(0.0);
         currentVelocities_.push_back(0.0);
         currentTemperatures_.push_back(0.0);
@@ -285,38 +286,13 @@ bool FeetechServo::setPositionOffset(uint8_t const &servoId, int const &position
 
 double FeetechServo::readCurrentPosition(uint8_t const &servoId)
 {
-    // Calculate wrapped position at servo horn (in radians)
-    double previous_absolute_position = (currentPositions_[idToIndex_[servoId]] + homePositions_[idToIndex_[servoId]]);
-    double previous_wrapped_absolute_position = wrap_to_2pi(previous_absolute_position);
-    
-    // Get current position at servo horn in radians
     int16_t absolute_position_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION);
-    double absolute_position_rad = absolute_position_ticks*RADIANS_PER_TICK;
+    double absolute_position_rad = absolute_position_ticks*RADIANS_PER_TICK;    
+    double position_difference_rad = absolute_position_rad - previousHornPositions_[idToIndex_[servoId]];
+    previousHornPositions_[idToIndex_[servoId]] = absolute_position_rad;
+    double wrapped_position_difference = wrap_to_pi(position_difference_rad);
 
-    // error
-    if (absolute_position_ticks==-1 || absolute_position_ticks==-2)
-    {
-        return -1;
-    }
-    double position_diff = absolute_position_rad - previous_wrapped_absolute_position;
-    double change_rads;
-
-    if (position_diff > 5.5) // 5.5 is a threshold value over which we assume the servo has wrapped around
-    {
-        change_rads = position_diff - RADIANS_PER_REVOLUTION;
-    }
-    else if (position_diff < -5.5)
-    {
-        change_rads = position_diff + RADIANS_PER_REVOLUTION;
-    }
-    else
-    {
-        change_rads = position_diff;
-    }
-    
-    // Add change in position to previous absolute position and correct for gear ratio, then recenter on home
-    currentPositions_[idToIndex_[servoId]] = (previous_absolute_position - homePositions_[idToIndex_[servoId]] + change_rads)/gearRatios_[idToIndex_[servoId]];
-    return currentPositions_[idToIndex_[servoId]];
+    return currentPositions_[idToIndex_[servoId]] = currentPositions_[idToIndex_[servoId]] + wrapped_position_difference/gearRatios_[idToIndex_[servoId]];
 }
 
 bool FeetechServo::readAllCurrentPositions()
@@ -623,6 +599,66 @@ void FeetechServo::setVelocityDirections(std::vector<int> const &directions)
     }
 }
 
+double FeetechServo::getProportionalGain(uint8_t const &servoId)
+{
+    return proportionalGains_[idToIndex_[servoId]];
+}
+
+void FeetechServo::setProportionalGain(uint8_t const &servoId, double const &gain)
+{
+    proportionalGains_[idToIndex_[servoId]] = gain;
+}
+
+std::vector<double> FeetechServo::getProportionalGains()
+{
+    return proportionalGains_;
+}
+
+void FeetechServo::setProportionalGains(std::vector<double> const &gains)
+{
+    proportionalGains_ = gains;
+}
+
+double FeetechServo::getDerivativeGain(uint8_t const &servoId)
+{
+    return derivativeGains_[idToIndex_[servoId]];
+}
+
+void FeetechServo::setDerivativeGain(uint8_t const &servoId, double const &gain)
+{
+    derivativeGains_[idToIndex_[servoId]] = gain;
+}
+
+std::vector<double> FeetechServo::getDerivativeGains()
+{
+    return derivativeGains_;
+}
+
+void FeetechServo::setDerivativeGains(std::vector<double> const &gains)
+{
+    derivativeGains_ = gains;
+}
+
+double FeetechServo::getIntegralGain(uint8_t const &servoId)
+{
+    return integralGains_[idToIndex_[servoId]];
+}
+
+void FeetechServo::setIntegralGain(uint8_t const &servoId, double const &gain)
+{
+    integralGains_[idToIndex_[servoId]] = gain;
+}
+
+std::vector<double> FeetechServo::getIntegralGains()
+{
+    return integralGains_;
+}
+
+void FeetechServo::setIntegralGains(std::vector<double> const &gains)
+{
+    integralGains_ = gains;
+}
+
 bool FeetechServo::trigerAction()
 {
     uint8_t noParam = 0;
@@ -923,8 +959,15 @@ int FeetechServo::writeCommand(const uint8_t *cmd, int cmd_length)
     return static_cast<int>(ret);
 }
 
-double FeetechServo::wrap_to_2pi(double angle_rad) {
+double FeetechServo::wrap_to_2pi(double angle_rad)
+{
     //return atan2(sin(angle_rad), cos(angle_rad))+M_PI; singularity at 0
     double twoPi = 2*M_PI;
     return angle_rad - twoPi*std::floor(angle_rad/twoPi);
+}
+
+double FeetechServo::wrap_to_pi(double angle_rad) 
+{
+    double twoPi = 2*M_PI;
+    return angle_rad - twoPi*std::floor((angle_rad + M_PI)/twoPi);
 }
