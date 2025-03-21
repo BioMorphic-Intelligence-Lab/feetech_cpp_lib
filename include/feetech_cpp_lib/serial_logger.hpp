@@ -43,10 +43,17 @@ private:
         auto now = system_clock::now();
         auto time = system_clock::to_time_t(now);
         auto us = duration_cast<microseconds>(now.time_since_epoch()).count() % 1000000;
-
-        log_file_ << "[" << std::put_time(std::localtime(&time), "%F %T")
+        
+        std::ostringstream log_entry_;
+        log_entry_ << "[" << std::put_time(std::localtime(&time), "%F %T")
                   << "." << std::setw(6) << std::setfill('0') << us << "] "
                   << direction << ": " << bytesToHex(data) << std::endl;
+        // Output to log file
+        if (log_file_.is_open()) {
+            log_file_ << log_entry_.str();
+            log_file_
+                .flush(); // Ensure immediate write to file
+        }
     }
 
     std::string bytesToHex(const std::vector<uint8_t>& data) {
