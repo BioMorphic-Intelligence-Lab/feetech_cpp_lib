@@ -19,11 +19,12 @@ namespace instruction
     uint8_t const RESET      = 0x06;
 };
 
-FeetechServo::FeetechServo(std::string port, long const &baud, const double frequency, const std::vector<uint8_t>& servo_ids, bool debug) : 
+FeetechServo::FeetechServo(std::string port, long const &baud, const double frequency, const std::vector<uint8_t>& servo_ids, bool debug, bool logging) : 
     serial_(nullptr), 
     referencePositions_(servo_ids.size()),
     referenceVelocities_(servo_ids.size()),
-    referenceAccelerations_(servo_ids.size())
+    referenceAccelerations_(servo_ids.size()),
+    logger_(nullptr)
     {
     // Write servo IDs to member data structure
     servoIds_ = servo_ids;
@@ -32,6 +33,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     settings_.baud = baud;
     settings_.frequency = frequency;
     settings_.debug = debug;
+    settings_.logging = logging;
 
     for (size_t i = 0; i < servoIds_.size(); ++i) {
         idToIndex_[servoIds_[i]] = i;
@@ -72,6 +74,12 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     this->serial_->set_option(boost::asio::serial_port_base::parity(boost::asio::serial_port_base::parity::none));
     this->serial_->set_option(boost::asio::serial_port_base::stop_bits(boost::asio::serial_port_base::stop_bits::one));
 
+    // Create logger if specified
+    if (settings_.logging)
+    {
+        std::cerr << "\033[31m" << "Creating logging file" << "\033[0m" << std::endl;
+        new ServoSerialLogger("serial_log.txt"); // TODO: Where is this file created?
+    }
     // Read all data once to populate data structs
     bool success=false;
     int fail_counter = 0;
@@ -864,6 +872,11 @@ int FeetechServo::receiveMessage(uint8_t const& servoId,
     if (result[readLength + 4] != checksum)
         return -4;
 
+    // Log the received message
+    if (this->logger_) {
+        this->logger_->logRx(result);
+    }
+
     // Copy to output buffer
     std::memcpy(outputBuffer, result.data() + 4, readLength);
     return 0;
@@ -956,6 +969,13 @@ void FeetechServo::determineServoType(uint8_t const& servoId)
 int FeetechServo::writeCommand(const uint8_t *cmd, int cmd_length)
 {
     std::size_t ret = this->serial_->write_some(boost::asio::buffer(cmd, cmd_length));
+
+    // Log the data
+    if (this->logger_) {
+        std::vector<uint8_t> data(cmd, cmd + ret);
+        this->logger_->logTx(data);
+    }
+
     return static_cast<int>(ret);
 }
 
