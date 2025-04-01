@@ -235,6 +235,18 @@ public:
     /// \param[in] mode Desired mode
     bool writeMode(unsigned char const& servoId, STSMode const& mode);
 
+    /// \brief Set the minimum angle of a servo.
+    /// \param[in] servoId ID of the servo
+    /// \param[in] minAngle Minimum angle in radians
+    /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
+    bool writeMinAngle(uint8_t const &servoId, double const &minAngle);
+
+    /// \brief Set the maximum angle of a servo.
+    /// \param[in] servoId ID of the servo
+    /// \param[in] maxAngle Maximum angle in radians
+    /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
+    bool writeMaxAngle(uint8_t const &servoId, double const &maxAngle);
+
     /// \brief Trigger the action previously stored by an asynchronous write on all servos.
     /// \return True on success
     bool trigerAction();

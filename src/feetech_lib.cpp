@@ -93,12 +93,13 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
             exit(-1);
         }
     }
-    // Set servos to velocity at velocity 0 and home
+    // Set servos to velocity at velocity 0 and home, set maximum angle to 0 to enable multi-turn
     for (size_t i = 0; i < servoIds_.size(); ++i)
     {
         setHomePosition(servoIds_[i]);
         writeTargetVelocity(servoIds_[i], 0, false);
-        writeMode(servoIds_[i], STSMode::STS_VELOCITY);
+        writeMode(servoIds_[i], STSMode::STS_POSITION);
+        writeMaxAngle(servoIds_[i], 0.f);
     }
 
     // Emulating the timer here because if it runs in the other thread I cannot see the output
@@ -145,30 +146,13 @@ bool FeetechServo::execute()
     readAllServoData();
 
     // Calculate rotational error on servo horn
-    double servo_rads_to_go;
-    double velocity_ref;
     for (size_t i = 0; i < servoIds_.size(); ++i)
     {
         // Position mode
         if (operatingModes_[i] == DriverMode::CONTINUOUS_POSITION)
         {
-            // Calculate servo rads to go at the horn
-            servo_rads_to_go = (referencePositions_[i].load(std::memory_order_relaxed) - currentPositions_[i])*gearRatios_[i];
-
-            velocity_ref = std::clamp(proportionalGains_[i]*servo_rads_to_go - derivativeGains_[i]*currentVelocities_[i]*directions_[i],
-                -maxSpeeds_[i], maxSpeeds_[i]);
-
-            // Set target speed
-            if (fabs(servo_rads_to_go)<settings_.position_tolerance)
-            {
-                // Stop servo
-                writeTargetVelocity(servoIds_[i], 0, false);
-            }
-            else
-            {
-                // Set target velocity
-                writeTargetVelocity(servoIds_[i], velocity_ref, false);
-            }
+           writeTargetPosition(servoIds_[i], 
+                static_cast<int>(referencePositions_[i].load(std::memory_order_relaxed)*gearRatios_[i]));
         }
         // Velocity mode
         else if (operatingModes_[i] == DriverMode::VELOCITY)
@@ -429,6 +413,18 @@ bool FeetechServo::writeMode(unsigned char const& servoId, STSMode const& mode)
     return writeRegister(servoId, STSRegisters::OPERATION_MODE, static_cast<unsigned char>(mode));
 }
 
+bool FeetechServo::writeMinAngle(uint8_t const &servoId, double const &minAngle)
+{
+    int minPosition_ticks = static_cast<int>(minAngle * TICKS_PER_RADIAN * gearRatios_[idToIndex_[servoId]]);
+    return writeTwouint8_tsRegister(servoId, STSRegisters::MINIMUM_ANGLE, minPosition_ticks);
+}
+
+bool FeetechServo::writeMaxAngle(uint8_t const &servoId, double const &maxAngle)
+{
+    int maxPosition_ticks = static_cast<int>(maxAngle * TICKS_PER_RADIAN * gearRatios_[idToIndex_[servoId]]);
+    return writeTwouint8_tsRegister(servoId, STSRegisters::MAXIMUM_ANGLE, maxPosition_ticks);
+}
+
 void FeetechServo::setReferencePosition(uint8_t const &servoId, double const &position)
 {
     referencePositions_[idToIndex_[servoId]].store(position, std::memory_order_relaxed);
@@ -472,6 +468,24 @@ DriverMode FeetechServo::getOperatingMode(uint8_t const &servoId)
 void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mode)
 {
     operatingModes_[idToIndex_[servoId]] = mode;
+    if (mode == DriverMode::VELOCITY)
+    {
+        writeMode(servoId, STSMode::STS_VELOCITY);
+    }
+    else if (mode == DriverMode::CONTINUOUS_POSITION)
+    {
+        writeMode(servoId, STSMode::STS_POSITION);
+    }
+    else if (mode == DriverMode::POSITION)
+    {
+        writeMode(servoId, STSMode::STS_POSITION);
+        writeMinAngle(servoId, 0); // Set min angle to 0 to dusable multi-turn
+        writeMaxAngle(servoId, 4095); // Set max angle to 0 to disable multi-turn
+    }
+    else
+    {
+        std::cerr << "\033[31m" << "[ERROR] Invalid operating mode" << "\033[0m" << std::endl;
+    }
 }
 
 std::vector<DriverMode> FeetechServo::getOperatingModes()
@@ -482,6 +496,10 @@ std::vector<DriverMode> FeetechServo::getOperatingModes()
 void FeetechServo::setOperatingModes(std::vector<DriverMode> const &modes)
 {
     operatingModes_ = modes;
+    for (size_t i = 0; i < modes.size(); ++i)
+    {
+        setOperatingMode(servoIds_[i], modes[i]);
+    }
 }
 
 double FeetechServo::getGearRatio(uint8_t const &servoId)
