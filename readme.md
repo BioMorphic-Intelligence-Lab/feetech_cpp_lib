@@ -13,6 +13,10 @@ sudo apt-get install libboost-all-dev
 ## How to use
 Simply clone the library into your project and include the header file. This will give you access to all the public functions.
 
+The `src/example.cpp` file contains an example moving the servo. It can be compiled by calling the convenience script `compile_example.sh` and executed with `./example`.
+
+You need to follow Feetech's instructions on setting the right ID (default value 1) and Baud rate on the servo. These must correspond with the values passed to the driver.
+
 
 ## Credits
 This library was heavily inspired by [matthieuvigne's Arduino implementation](https://github.com/matthieuvigne/STS_servos).
