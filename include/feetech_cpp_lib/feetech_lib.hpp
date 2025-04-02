@@ -156,7 +156,7 @@ public:
     /// \param[in] servoId servo ID
     /// \param[in] positionOffset new position offset
     /// \return True if servo could successfully change position offset
-    bool setPositionOffset(uint8_t const &servoId, int const &positionOffset);
+    bool writePositionOffset(uint8_t const &servoId, int const &positionOffset);
     
     /// @brief Set new driver settings.
     /// @param settings 
