@@ -157,6 +157,12 @@ public:
     /// \param[in] positionOffset new position offset
     /// \return True if servo could successfully change position offset
     bool writePositionOffset(uint8_t const &servoId, int const &positionOffset);
+
+    /// \brief Read the position offset of a servo.
+    /// \param[in] servoId servo ID
+    /// \param[out] positionOffset position offset
+    /// \return Position offset, -1 on read failure, -2 on servo type failure.
+    bool readPositionOffset(uint8_t const &servoId, int16_t &positionOffset);
     
     /// @brief Set new driver settings.
     /// @param settings 
@@ -184,6 +190,12 @@ public:
     /// \param[in] servoId ID of the servo
     /// \return Position, in rad, -1 on read failure, -2 on servo type failure.
     double readCurrentPosition(uint8_t const &servoId);
+
+    /// \brief Get current servo position in ticks.
+    /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
+    /// \param[in] servoId ID of the servo
+    /// \return Position, in ticks, -1 on read failure, -2 on servo type failure.
+    int16_t readCurrentPositionTicks(uint8_t const &servoId);
 
     /// \brief Get current servo speed.
     /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
@@ -245,7 +257,7 @@ public:
     /// \param[in] servoId ID of the servo
     /// \param[in] maxAngle Maximum angle in radians
     /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
-    bool writeMaxAngle(uint8_t const &servoId, double const &maxAngle);
+    bool writeMaxAngle(uint8_t const &servoId, int16_t const &maxAngle);
 
     /// \brief Trigger the action previously stored by an asynchronous write on all servos.
     /// \return True on success
@@ -353,11 +365,11 @@ public:
     /// @brief Set the current position as servo home position. Adjust current positions and reference positions 
     ///         to account for new home.
     /// @param[in] servoId ID of the servo
-    void setHomePosition(uint8_t const &servoId);
+    void resetHomePosition(uint8_t const &servoId);
 
     /// @brief Get the home positions for all servos.
     /// @return Vector of home positions in radians.
-    std::vector<double> getHomePositions();
+    std::vector<int16_t> getHomePositions();
 
     /// @brief Set the current positions for all servos as their home positions. Adjust current positions and reference positions
     ///         to account for new home.
@@ -502,7 +514,7 @@ private:
     std::vector<double> currentVelocities_;
     std::vector<double> currentTemperatures_;
     std::vector<double> currentCurrents_;
-    std::vector<double> homePositions_;
+    std::vector<int16_t> homePositions_; // In ticks at horn
 
     // Servo settings
     std::vector<DriverMode> operatingModes_;

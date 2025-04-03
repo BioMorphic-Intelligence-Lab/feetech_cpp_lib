@@ -51,7 +51,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
         currentVelocities_.push_back(0.0);
         currentTemperatures_.push_back(0.0);
         currentCurrents_.push_back(0.0);
-        homePositions_.push_back(0.0);
+        homePositions_.push_back(0);
 
         gearRatios_.push_back(1.0); // From horn to output, i.e. if horn:output = 2:1, gear ratio is 2
         operatingModes_.push_back(DriverMode::CONTINUOUS_POSITION); // Initialize in position mode
@@ -96,10 +96,10 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     // Set servos to velocity at velocity 0 and home, set maximum angle to 0 to enable multi-turn
     for (size_t i = 0; i < servoIds_.size(); ++i)
     {
-        setHomePosition(servoIds_[i]);
+        writeMaxAngle(servoIds_[i], 0);
+        resetHomePosition(servoIds_[i]);
         writeTargetVelocity(servoIds_[i], 0, false);
         writeMode(servoIds_[i], STSMode::STS_POSITION);
-        writeMaxAngle(servoIds_[i], 0.f);
     }
 
     // Emulating the timer here because if it runs in the other thread I cannot see the output
@@ -151,9 +151,9 @@ bool FeetechServo::execute()
         // Position mode
         if (operatingModes_[i] == DriverMode::CONTINUOUS_POSITION)
         {
-            std::cout<< "Gear ratio: " << gearRatios_[i] << std::endl;
             std::cout<< "Reference position output in rad " << referencePositions_[i].load(std::memory_order_relaxed) << std::endl;
-            int position = static_cast<int>(referencePositions_[i].load(std::memory_order_relaxed)*gearRatios_[i]*TICKS_PER_RADIAN);
+            int position = static_cast<int>(referencePositions_[i].load(std::memory_order_relaxed)*gearRatios_[i]*TICKS_PER_RADIAN + 
+                homePositions_[i]);
             writeTargetPosition(servoIds_[i], position);
             std::cout << "Wrote target position as ticks: " << position << std::endl;
         }
@@ -282,11 +282,17 @@ bool FeetechServo::writePositionOffset(uint8_t const &servoId, int const &positi
 double FeetechServo::readCurrentPosition(uint8_t const &servoId)
 {
     int16_t absolute_position_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION);
-    double current_position_rads = (absolute_position_ticks * RADIANS_PER_TICK - homePositions_[idToIndex_[servoId]])/gearRatios_[idToIndex_[servoId]];
+    double current_position_rads = (absolute_position_ticks * RADIANS_PER_TICK) / gearRatios_[idToIndex_[servoId]];
 
     std::cout << "Current position: " << current_position_rads << " rads "<< std::endl;
 
     return currentPositions_[idToIndex_[servoId]] = current_position_rads;
+}
+
+int16_t FeetechServo::readCurrentPositionTicks(uint8_t const &servoId)
+{
+
+    return readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION);
 }
 
 bool FeetechServo::readAllCurrentPositions()
@@ -422,10 +428,9 @@ bool FeetechServo::writeMinAngle(uint8_t const &servoId, double const &minAngle)
     return writeTwouint8_tsRegister(servoId, STSRegisters::MINIMUM_ANGLE, minPosition_ticks);
 }
 
-bool FeetechServo::writeMaxAngle(uint8_t const &servoId, double const &maxAngle)
+bool FeetechServo::writeMaxAngle(uint8_t const &servoId, int16_t const &maxAngle)
 {
-    int maxPosition_ticks = static_cast<int>(maxAngle * TICKS_PER_RADIAN * gearRatios_[idToIndex_[servoId]]);
-    return writeTwouint8_tsRegister(servoId, STSRegisters::MAXIMUM_ANGLE, maxPosition_ticks);
+    return writeTwouint8_tsRegister(servoId, STSRegisters::MAXIMUM_ANGLE, maxAngle);
 }
 
 void FeetechServo::setReferencePosition(uint8_t const &servoId, double const &position)
@@ -552,27 +557,15 @@ double FeetechServo::getHomePosition(uint8_t const &servoId)
     return homePositions_[idToIndex_[servoId]];
 }
 
-void FeetechServo::setHomePosition(uint8_t const &servoId)
+void FeetechServo::resetHomePosition(uint8_t const &servoId)
 {
     // Get current position
-    readCurrentPosition(servoId);
-
-    homePositions_[idToIndex_[servoId]] = homePositions_[idToIndex_[servoId]] + currentPositions_[idToIndex_[servoId]];
-
-    // Adjust reference position to current position to make sure servos don't move when setting home
-    referencePositions_[idToIndex_[servoId]].store(0.0, std::memory_order_relaxed);
-
-    // Adjust current position to account for home position
-    currentPositions_[idToIndex_[servoId]] = 0.0;
-
-    std::cout << "Setting home position for servo " << static_cast<int>(servoId) << " to " << homePositions_[idToIndex_[servoId]] << std::endl;
-    int home_position_ticks = static_cast<int>(homePositions_[idToIndex_[servoId]] * TICKS_PER_RADIAN * gearRatios_[idToIndex_[servoId]]);
-    // TODO: Add setting home in servo registers when mode == POSITION  (i.e. not CONTINUOUS_POSITION)
-    std::cout << "Writing home position to servo " << static_cast<int>(servoId) << " as ticks: " << home_position_ticks << std::endl;
-    writePositionOffset(servoId, home_position_ticks);
+    int16_t current_position = readCurrentPositionTicks(servoId);
+    // Assign current position as home
+    homePositions_[idToIndex_[servoId]] = current_position;
 }
 
-std::vector<double> FeetechServo::getHomePositions()
+std::vector<int16_t> FeetechServo::getHomePositions()
 {
     return homePositions_;
 }
