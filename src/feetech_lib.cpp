@@ -842,7 +842,7 @@ int FeetechServo::receiveMessage(uint8_t const& servoId,
     boost::system::error_code read_ec, timer_ec;
     std::size_t bytes_read = 0;
 
-    int serial_timeout_ms = static_cast<int>(settings_.tx_time_per_byte * (readLength + 5) + 10);
+    int serial_timeout_ms = static_cast<int>(settings_.tx_time_per_byte * (readLength + 5) + 25);
 
     boost::asio::steady_timer timer(*io_context_);
     bool read_done = false, timer_expired = false;
