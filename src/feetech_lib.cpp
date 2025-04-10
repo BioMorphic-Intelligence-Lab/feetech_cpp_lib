@@ -1,4 +1,5 @@
 #include "feetech_lib.hpp"
+#include <chrono>
 
 
 #define TICKS_PER_REVOLUTION 4096
@@ -66,7 +67,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
         this->serial_ = new boost::asio::serial_port(*io_context_, port);
     }
     catch (const boost::wrapexcept<boost::system::system_error>& e){
-        std::cerr << "\033[31m" << "[ERROR] Could not open serial port, is the USB connected?" << "\033[0m" << std::endl;
+        std::cerr << "\033[31m" << "[ERROR] Could not open serial port, is the USB connected and baud rate correct?" << "\033[0m" << std::endl;
         exit(1);
     } 
     this->serial_->set_option(boost::asio::serial_port_base::baud_rate(baud));
@@ -83,8 +84,12 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     // Read all data once to populate data structs
     bool success=false;
     int fail_counter = 0;
-    while(!success)
+    int counter = 0;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    for(int i = 0; i<10; i++)
     {
+
+        std::cout<<"Checking servo connections..."<<std::endl;
         success = readAllServoData();
         fail_counter++;
         if (fail_counter>10)
@@ -103,7 +108,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     }
 
     // Emulating the timer here because if it runs in the other thread I cannot see the output
-    int counter = 0;
+    counter = 0;
     if (settings_.debug)
     {
         std::cout<<"Settings.debug = " << settings_.debug << std::endl;
@@ -143,30 +148,35 @@ FeetechServo::~FeetechServo()
 bool FeetechServo::execute()
 {
     // Update current servo data
-    readAllServoData();
-
-    // Calculate rotational error on servo horn
-    for (size_t i = 0; i < servoIds_.size(); ++i)
+    if(readAllServoData())
     {
-        // Position mode
-        if (operatingModes_[i] == DriverMode::CONTINUOUS_POSITION)
+        // Calculate rotational error on servo horn
+        for (size_t i = 0; i < servoIds_.size(); ++i)
         {
-            std::cout<< "[ID: " << static_cast<int>(servoIds_[i])<<"] "<< "Reference position output in rad " << referencePositions_[i].load(std::memory_order_relaxed) << std::endl;
-            int position = static_cast<int>(referencePositions_[i].load(std::memory_order_relaxed)*gearRatios_[i]*TICKS_PER_RADIAN + 
-                homePositions_[i]);
-            writeTargetPosition(servoIds_[i], position);
-            std::cout << "[ID: " << static_cast<int>(servoIds_[i])<<"] "<< "Wrote target position as ticks: " << position << std::endl;
+            // Position mode
+            if (operatingModes_[i] == DriverMode::CONTINUOUS_POSITION)
+            {
+                std::cout<< "[ID: " << static_cast<int>(servoIds_[i])<<"] "<< "Reference position output in rad " << referencePositions_[i].load(std::memory_order_relaxed) << std::endl;
+                int position = static_cast<int>(directions_[i]* referencePositions_[i].load(std::memory_order_relaxed)*gearRatios_[i]*TICKS_PER_RADIAN + 
+                    homePositions_[i]);
+                writeTargetPosition(servoIds_[i], position, maxSpeeds_[i]*gearRatios_[i]*TICKS_PER_RADIAN);
+                std::cout << "[ID: " << static_cast<int>(servoIds_[i])<<"] "<< "Wrote target position as ticks: " << position << std::endl;
+            }
+            // Velocity mode
+            else if (operatingModes_[i] == DriverMode::VELOCITY)
+            {
+                // Set target velocity
+                double velocity = std::clamp(referenceVelocities_[i].load(std::memory_order_relaxed)*gearRatios_[i],
+                    -maxSpeeds_[i], maxSpeeds_[i]);
+                writeTargetVelocity(servoIds_[i], velocity, false);
+            }
         }
-        // Velocity mode
-        else if (operatingModes_[i] == DriverMode::VELOCITY)
-        {
-            // Set target velocity
-            double velocity = std::clamp(referenceVelocities_[i].load(std::memory_order_relaxed)*gearRatios_[i],
-                -maxSpeeds_[i], maxSpeeds_[i]);
-            writeTargetVelocity(servoIds_[i], velocity, false);
-        }
+        return true;
     }
-    return true;
+    else
+    {
+        return false;
+    }
 }
 
 bool FeetechServo::close()
@@ -284,12 +294,12 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
     int16_t absolute_position_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION);
     if (absolute_position_ticks == -1)
     {
-        std::cerr << "\033[31m" << "[ERROR] Failed to read current position (pos == -1)" << "\033[0m" << std::endl;
+        std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoId)<< "] "<<"[ERROR] Failed to read current position (pos == -1)" << "\033[0m" << std::endl;
         return -1;
     }
     else if (absolute_position_ticks == -2)
     {
-        std::cerr << "\033[31m" << "[ERROR] Failed to read current position (pos == -2)" << "\033[0m" << std::endl;
+        std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoId)<< "] "<< "[ERROR] Failed to read current position (pos == -2)" << "\033[0m" << std::endl;
         return -2;
     }
     double current_position_rads = (absolute_position_ticks * RADIANS_PER_TICK) / gearRatios_[idToIndex_[servoId]];
@@ -317,7 +327,7 @@ bool FeetechServo::readAllCurrentPositions()
         // If 0 is returned, position is not read correctly, so return value of function becomes false
         if (position == -1)
         {
-            std::cerr << "\033[31m" << "[ERROR] Failed to read all positions (pos == -1)" << "\033[0m" << std::endl;
+            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoIds_[i])<< "] "<< "[ERROR] Failed to read all positions (pos == -1)" << "\033[0m" << std::endl;
             ret = false;
         }
     }
@@ -354,7 +364,7 @@ bool FeetechServo::readAllCurrentSpeeds()
         if (velocity == -1 || velocity == -2) // TODO: Do something about the error codes, the velocity can actually be -1 or -2 rad/s, 
         //although this would be very unlikely
         {
-            std::cerr << "\033[31m" << "[ERROR] Failed to read all speeds (vel == -1 or -2) for ID %i" << servoIds_[i] << "\033[0m" << std::endl;
+            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoIds_[i])<< "] "<< "[ERROR] Failed to read all speeds (vel == -1 or -2)"  << "\033[0m" << std::endl;
             ret = false;
         }
     }
@@ -391,7 +401,7 @@ bool FeetechServo::readAllCurrentCurrents()
         // If 0 is returned, velocity is not read correctly, so return value of function becomes false
         if (current == -1 || current == -2)
         {
-            std::cerr << "\033[31m" << "[ERROR] Failed to read all currents (current == -1 or -2)" << "\033[0m" << std::endl;
+            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoIds_[i])<< "] "<< "[ERROR] Failed to read all currents (current == -1 or -2)" << "\033[0m" << std::endl;
             ret = false;
         }
     }
@@ -504,7 +514,7 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
     }
     else
     {
-        std::cerr << "\033[31m" << "[ERROR] Invalid operating mode" << "\033[0m" << std::endl;
+        std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoId)<< "] "<< "[ERROR] Invalid operating mode" << "\033[0m" << std::endl;
     }
 }
 
@@ -610,7 +620,7 @@ void FeetechServo::setVelocityDirection(uint8_t const &servoId, int const &direc
 {
     if (direction != 1 && direction != -1)
     {
-        std::cerr << "\033[31m" << "[ERROR] Direction must be 1 for default and -1 for inverted. Keeping old direction." << "\033[0m" << std::endl;
+        std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoId)<< "] "<< "[ERROR] Direction must be 1 for default and -1 for inverted. Keeping old direction." << "\033[0m" << std::endl;
         return;
     }
     // set direction
@@ -631,7 +641,7 @@ void FeetechServo::setVelocityDirections(std::vector<int> const &directions)
     {
         if (directions[i] != 1 && directions[i] != -1)
         {
-            std::cerr << "\033[31m" << "[ERROR] Direction must be 1 for default and -1 for inverted. Keeping old directions." << "\033[0m" << std::endl;
+            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoIds_[i])<< "] "<< "[ERROR] Direction must be 1 for default and -1 for inverted. Keeping old directions." << "\033[0m" << std::endl;
             return;
         }
     }
