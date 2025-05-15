@@ -156,11 +156,11 @@ bool FeetechServo::execute()
             // Position mode
             if (operatingModes_[i] == DriverMode::CONTINUOUS_POSITION)
             {
-                std::cout<< "[ID: " << static_cast<int>(servoIds_[i])<<"] "<< "Reference position output in rad " << referencePositions_[i].load(std::memory_order_relaxed) << std::endl;
+                // std::cout<< "[ID: " << static_cast<int>(servoIds_[i])<<"] "<< "Reference position output in rad " << referencePositions_[i].load(std::memory_order_relaxed) << std::endl;
                 int position = static_cast<int>(directions_[i]* referencePositions_[i].load(std::memory_order_relaxed)*gearRatios_[i]*TICKS_PER_RADIAN + 
                     homePositions_[i]);
                 writeTargetPosition(servoIds_[i], position, maxSpeeds_[i]*gearRatios_[i]*TICKS_PER_RADIAN);
-                std::cout << "[ID: " << static_cast<int>(servoIds_[i])<<"] "<< "Wrote target position as ticks: " << position << std::endl;
+                // std::cout << "[ID: " << static_cast<int>(servoIds_[i])<<"] "<< "Wrote target position as ticks: " << position << std::endl;
             }
             // Velocity mode
             else if (operatingModes_[i] == DriverMode::VELOCITY)
@@ -303,8 +303,8 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
         return -2;
     }
     double current_position_rads = (absolute_position_ticks * RADIANS_PER_TICK) / gearRatios_[idToIndex_[servoId]];
-    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
-    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
 
     return currentPositions_[idToIndex_[servoId]] = current_position_rads;
 }
@@ -416,7 +416,7 @@ bool FeetechServo::isMoving(uint8_t const &servoId)
 
 bool FeetechServo::writeTargetPosition(uint8_t const &servoId, int const &position, int const &speed, bool const &asynchronous)
 {
-    std::cout << "[ID: " << static_cast<int>(servoId)<<"] "<< "Writing target position: " << position << std::endl;
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"] "<< "Writing target position: " << position << std::endl;
     uint8_t params[6] = {0, 0, // Position
         0, 0, // Padding
         0, 0}; // Velocity
