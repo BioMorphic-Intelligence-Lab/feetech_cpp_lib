@@ -79,7 +79,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     if (settings_.logging)
     {
         std::cerr << "\033[31m" << "Creating logging file" << "\033[0m" << std::endl;
-        new ServoSerialLogger("serial_log.txt"); // TODO: Where is this file created?
+        this-> logger_ = std::make_shared<ServoSerialLogger>("/ros2_ws/aerial_tactile_servoing/data/serial_log.txt"); // TODO: Where is this file created?
     }
     // Read all data once to populate data structs
     bool success=false;
