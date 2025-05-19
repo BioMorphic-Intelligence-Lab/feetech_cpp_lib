@@ -103,6 +103,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     {
         writeMaxAngle(servoIds_[i], 0);
         resetHomePosition(servoIds_[i]);
+        writeTorqueEnable(servoIds_[i], true);
         writeTargetVelocity(servoIds_[i], 0, false);
         writeMode(servoIds_[i], STSMode::STS_POSITION);
     }
@@ -138,6 +139,13 @@ FeetechServo::~FeetechServo()
 {
     // Set velocity to zero
     stopAll();
+
+    // Set torque disable
+    for (size_t i = 0; i < servoIds_.size(); ++i)
+    {
+        writeTorqueEnable(servoIds_[i], false);
+    }
+    
     // Close serial port
     close();
     // Delete serial port and io_context
@@ -451,6 +459,11 @@ bool FeetechServo::writeMinAngle(uint8_t const &servoId, double const &minAngle)
 bool FeetechServo::writeMaxAngle(uint8_t const &servoId, int16_t const &maxAngle)
 {
     return writeTwouint8_tsRegister(servoId, STSRegisters::MAXIMUM_ANGLE, maxAngle);
+}
+
+bool FeetechServo::writeTorqueEnable(uint8_t const &servoId, bool const enable)
+{
+    return writeRegister(servoId, STSRegisters::TORQUE_SWITCH, static_cast<int8_t>(enable));
 }
 
 void FeetechServo::setReferencePosition(uint8_t const &servoId, double const &position)

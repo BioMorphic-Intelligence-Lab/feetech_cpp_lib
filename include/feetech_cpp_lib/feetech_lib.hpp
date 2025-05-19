@@ -259,6 +259,12 @@ public:
     /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
     bool writeMaxAngle(uint8_t const &servoId, int16_t const &maxAngle);
 
+    /// @brief Set torque enable
+    /// @param servoId ID of the servo
+    /// @param enable True for enabling, false for disabling
+    /// @return True if success
+    bool writeTorqueEnable(uint8_t const &servoId, bool const enable);
+
     /// \brief Trigger the action previously stored by an asynchronous write on all servos.
     /// \return True on success
     bool trigerAction();
