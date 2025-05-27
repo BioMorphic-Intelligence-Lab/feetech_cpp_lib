@@ -311,8 +311,8 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
         return -2;
     }
     double current_position_rads = ((absolute_position_ticks - homePositions_[idToIndex_[servoId]]) * RADIANS_PER_TICK) / gearRatios_[idToIndex_[servoId]];
-    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
-    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
 
     return currentPositions_[idToIndex_[servoId]] = current_position_rads;
 }
