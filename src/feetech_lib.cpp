@@ -1,4 +1,5 @@
 #include "feetech_lib.hpp"
+#include <chrono>
 
 
 #define TICKS_PER_REVOLUTION 4096
@@ -51,7 +52,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
         currentVelocities_.push_back(0.0);
         currentTemperatures_.push_back(0.0);
         currentCurrents_.push_back(0.0);
-        homePositions_.push_back(0.0);
+        homePositions_.push_back(0);
 
         gearRatios_.push_back(1.0); // From horn to output, i.e. if horn:output = 2:1, gear ratio is 2
         operatingModes_.push_back(DriverMode::CONTINUOUS_POSITION); // Initialize in position mode
@@ -66,7 +67,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
         this->serial_ = new boost::asio::serial_port(*io_context_, port);
     }
     catch (const boost::wrapexcept<boost::system::system_error>& e){
-        std::cerr << "\033[31m" << "[ERROR] Could not open serial port, is the USB connected?" << "\033[0m" << std::endl;
+        std::cerr << "\033[31m" << "[ERROR] Could not open serial port, is the USB connected and baud rate correct?" << "\033[0m" << std::endl;
         exit(1);
     } 
     this->serial_->set_option(boost::asio::serial_port_base::baud_rate(baud));
@@ -78,13 +79,17 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     if (settings_.logging)
     {
         std::cerr << "\033[31m" << "Creating logging file" << "\033[0m" << std::endl;
-        new ServoSerialLogger("serial_log.txt"); // TODO: Where is this file created?
+        this-> logger_ = std::make_shared<ServoSerialLogger>("/ros2_ws/aerial_tactile_servoing/data/serial_log.txt"); // TODO: Where is this file created?
     }
     // Read all data once to populate data structs
     bool success=false;
     int fail_counter = 0;
-    while(!success)
+    int counter = 0;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    for(int i = 0; i<10; i++)
     {
+
+        std::cout<<"Checking servo connections..."<<std::endl;
         success = readAllServoData();
         fail_counter++;
         if (fail_counter>10)
@@ -93,16 +98,18 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
             exit(-1);
         }
     }
-    // Set servos to velocity at velocity 0 and home
+    // Set servos to velocity at velocity 0 and home, set maximum angle to 0 to enable multi-turn
     for (size_t i = 0; i < servoIds_.size(); ++i)
     {
-        setHomePosition(servoIds_[i]);
+        writeMaxAngle(servoIds_[i], 0);
+        resetHomePosition(servoIds_[i]);
+        writeTorqueEnable(servoIds_[i], true);
         writeTargetVelocity(servoIds_[i], 0, false);
-        writeMode(servoIds_[i], STSMode::STS_VELOCITY);
+        writeMode(servoIds_[i], STSMode::STS_POSITION);
     }
 
     // Emulating the timer here because if it runs in the other thread I cannot see the output
-    int counter = 0;
+    counter = 0;
     if (settings_.debug)
     {
         std::cout<<"Settings.debug = " << settings_.debug << std::endl;
@@ -132,6 +139,13 @@ FeetechServo::~FeetechServo()
 {
     // Set velocity to zero
     stopAll();
+
+    // Set torque disable
+    for (size_t i = 0; i < servoIds_.size(); ++i)
+    {
+        writeTorqueEnable(servoIds_[i], false);
+    }
+    
     // Close serial port
     close();
     // Delete serial port and io_context
@@ -142,44 +156,35 @@ FeetechServo::~FeetechServo()
 bool FeetechServo::execute()
 {
     // Update current servo data
-    readAllServoData();
-
-    // Calculate rotational error on servo horn
-    double servo_rads_to_go;
-    double velocity_ref;
-    for (size_t i = 0; i < servoIds_.size(); ++i)
+    if(readAllServoData())
     {
-        // Position mode
-        if (operatingModes_[i] == DriverMode::CONTINUOUS_POSITION)
+        // Calculate rotational error on servo horn
+        for (size_t i = 0; i < servoIds_.size(); ++i)
         {
-            // Calculate servo rads to go at the horn
-            servo_rads_to_go = (referencePositions_[i].load(std::memory_order_relaxed) - currentPositions_[i])*gearRatios_[i];
-
-            velocity_ref = std::clamp(proportionalGains_[i]*servo_rads_to_go - derivativeGains_[i]*currentVelocities_[i]*directions_[i],
-                -maxSpeeds_[i], maxSpeeds_[i]);
-
-            // Set target speed
-            if (fabs(servo_rads_to_go)<settings_.position_tolerance)
+            // Position mode
+            if (operatingModes_[i] == DriverMode::CONTINUOUS_POSITION)
             {
-                // Stop servo
-                writeTargetVelocity(servoIds_[i], 0, false);
+                // std::cout<< "[ID: " << static_cast<int>(servoIds_[i])<<"] "<< "Reference position output in rad " << referencePositions_[i].load(std::memory_order_relaxed) << std::endl;
+                int position = static_cast<int>(directions_[i]* referencePositions_[i].load(std::memory_order_relaxed)*gearRatios_[i]*TICKS_PER_RADIAN + 
+                    homePositions_[i]);
+                writeTargetPosition(servoIds_[i], position, maxSpeeds_[i]*gearRatios_[i]*TICKS_PER_RADIAN);
+                // std::cout << "[ID: " << static_cast<int>(servoIds_[i])<<"] "<< "Wrote target position as ticks: " << position << std::endl;
             }
-            else
+            // Velocity mode
+            else if (operatingModes_[i] == DriverMode::VELOCITY)
             {
                 // Set target velocity
-                writeTargetVelocity(servoIds_[i], velocity_ref, false);
+                double velocity = std::clamp(referenceVelocities_[i].load(std::memory_order_relaxed)*gearRatios_[i],
+                    -maxSpeeds_[i], maxSpeeds_[i]);
+                writeTargetVelocity(servoIds_[i], velocity, false);
             }
         }
-        // Velocity mode
-        else if (operatingModes_[i] == DriverMode::VELOCITY)
-        {
-            // Set target velocity
-            double velocity = std::clamp(referenceVelocities_[i].load(std::memory_order_relaxed)/gearRatios_[i],
-                -maxSpeeds_[i], maxSpeeds_[i]);
-            writeTargetVelocity(servoIds_[i], velocity, false);
-        }
+        return true;
     }
-    return true;
+    else
+    {
+        return false;
+    }
 }
 
 bool FeetechServo::close()
@@ -279,7 +284,7 @@ bool FeetechServo::setId(uint8_t const &oldServoId, uint8_t const &newServoId)
 }
 
 // TODO: Deprecate this function when implementing position based control and more advanced homing
-bool FeetechServo::setPositionOffset(uint8_t const &servoId, int const &positionOffset)
+bool FeetechServo::writePositionOffset(uint8_t const &servoId, int const &positionOffset)
 {
     if (!writeRegister(servoId, STSRegisters::WRITE_LOCK, 0))
         return false;
@@ -295,12 +300,27 @@ bool FeetechServo::setPositionOffset(uint8_t const &servoId, int const &position
 double FeetechServo::readCurrentPosition(uint8_t const &servoId)
 {
     int16_t absolute_position_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION);
-    double absolute_position_rad = absolute_position_ticks*RADIANS_PER_TICK;    
-    double position_difference_rad = absolute_position_rad - previousHornPositions_[idToIndex_[servoId]];
-    previousHornPositions_[idToIndex_[servoId]] = absolute_position_rad;
-    double wrapped_position_difference = wrap_to_pi(position_difference_rad);
+    if (absolute_position_ticks == -1)
+    {
+        std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoId)<< "] "<<"[ERROR] Failed to read current position (pos == -1)" << "\033[0m" << std::endl;
+        return -1;
+    }
+    else if (absolute_position_ticks == -2)
+    {
+        std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoId)<< "] "<< "[ERROR] Failed to read current position (pos == -2)" << "\033[0m" << std::endl;
+        return -2;
+    }
+    double current_position_rads = ((absolute_position_ticks - homePositions_[idToIndex_[servoId]]) * RADIANS_PER_TICK) / gearRatios_[idToIndex_[servoId]];
+    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
+    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
 
-    return currentPositions_[idToIndex_[servoId]] = currentPositions_[idToIndex_[servoId]] + wrapped_position_difference/gearRatios_[idToIndex_[servoId]];
+    return currentPositions_[idToIndex_[servoId]] = current_position_rads;
+}
+
+int16_t FeetechServo::readCurrentPositionTicks(uint8_t const &servoId)
+{
+
+    return readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION);
 }
 
 bool FeetechServo::readAllCurrentPositions()
@@ -315,7 +335,7 @@ bool FeetechServo::readAllCurrentPositions()
         // If 0 is returned, position is not read correctly, so return value of function becomes false
         if (position == -1)
         {
-            std::cerr << "\033[31m" << "[ERROR] Failed to read all positions (pos == -1)" << "\033[0m" << std::endl;
+            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoIds_[i])<< "] "<< "[ERROR] Failed to read all positions (pos == -1)" << "\033[0m" << std::endl;
             ret = false;
         }
     }
@@ -352,7 +372,7 @@ bool FeetechServo::readAllCurrentSpeeds()
         if (velocity == -1 || velocity == -2) // TODO: Do something about the error codes, the velocity can actually be -1 or -2 rad/s, 
         //although this would be very unlikely
         {
-            std::cerr << "\033[31m" << "[ERROR] Failed to read all speeds (vel == -1 or -2) for ID %i" << servoIds_[i] << "\033[0m" << std::endl;
+            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoIds_[i])<< "] "<< "[ERROR] Failed to read all speeds (vel == -1 or -2)"  << "\033[0m" << std::endl;
             ret = false;
         }
     }
@@ -389,7 +409,7 @@ bool FeetechServo::readAllCurrentCurrents()
         // If 0 is returned, velocity is not read correctly, so return value of function becomes false
         if (current == -1 || current == -2)
         {
-            std::cerr << "\033[31m" << "[ERROR] Failed to read all currents (current == -1 or -2)" << "\033[0m" << std::endl;
+            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoIds_[i])<< "] "<< "[ERROR] Failed to read all currents (current == -1 or -2)" << "\033[0m" << std::endl;
             ret = false;
         }
     }
@@ -404,6 +424,7 @@ bool FeetechServo::isMoving(uint8_t const &servoId)
 
 bool FeetechServo::writeTargetPosition(uint8_t const &servoId, int const &position, int const &speed, bool const &asynchronous)
 {
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"] "<< "Writing target position: " << position << std::endl;
     uint8_t params[6] = {0, 0, // Position
         0, 0, // Padding
         0, 0}; // Velocity
@@ -427,6 +448,22 @@ bool FeetechServo::writeTargetAcceleration(uint8_t const &servoId, uint8_t const
 bool FeetechServo::writeMode(unsigned char const& servoId, STSMode const& mode)
 {
     return writeRegister(servoId, STSRegisters::OPERATION_MODE, static_cast<unsigned char>(mode));
+}
+
+bool FeetechServo::writeMinAngle(uint8_t const &servoId, double const &minAngle)
+{
+    int minPosition_ticks = static_cast<int>(minAngle * TICKS_PER_RADIAN * gearRatios_[idToIndex_[servoId]]);
+    return writeTwouint8_tsRegister(servoId, STSRegisters::MINIMUM_ANGLE, minPosition_ticks);
+}
+
+bool FeetechServo::writeMaxAngle(uint8_t const &servoId, int16_t const &maxAngle)
+{
+    return writeTwouint8_tsRegister(servoId, STSRegisters::MAXIMUM_ANGLE, maxAngle);
+}
+
+bool FeetechServo::writeTorqueEnable(uint8_t const &servoId, bool const enable)
+{
+    return writeRegister(servoId, STSRegisters::TORQUE_SWITCH, static_cast<int8_t>(enable));
 }
 
 void FeetechServo::setReferencePosition(uint8_t const &servoId, double const &position)
@@ -472,6 +509,26 @@ DriverMode FeetechServo::getOperatingMode(uint8_t const &servoId)
 void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mode)
 {
     operatingModes_[idToIndex_[servoId]] = mode;
+    if (mode == DriverMode::VELOCITY)
+    {
+        writeMode(servoId, STSMode::STS_VELOCITY);
+    }
+    else if (mode == DriverMode::CONTINUOUS_POSITION)
+    {
+        writeMode(servoId, STSMode::STS_POSITION);
+        writeMinAngle(servoId, 0); // Set min angle to 0 to dusable multi-turn
+        writeMaxAngle(servoId, 0); // Set max angle to 0 to enable multi-turn       
+    }
+    else if (mode == DriverMode::POSITION)
+    {
+        writeMode(servoId, STSMode::STS_POSITION);
+        writeMinAngle(servoId, 0); // Set min angle to 0 to dusable multi-turn
+        writeMaxAngle(servoId, 4095); // Set max angle to 4095 to disable multi-turn
+    }
+    else
+    {
+        std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoId)<< "] "<< "[ERROR] Invalid operating mode" << "\033[0m" << std::endl;
+    }
 }
 
 std::vector<DriverMode> FeetechServo::getOperatingModes()
@@ -482,6 +539,10 @@ std::vector<DriverMode> FeetechServo::getOperatingModes()
 void FeetechServo::setOperatingModes(std::vector<DriverMode> const &modes)
 {
     operatingModes_ = modes;
+    for (size_t i = 0; i < modes.size(); ++i)
+    {
+        setOperatingMode(servoIds_[i], modes[i]);
+    }
 }
 
 double FeetechServo::getGearRatio(uint8_t const &servoId)
@@ -529,23 +590,23 @@ double FeetechServo::getHomePosition(uint8_t const &servoId)
     return homePositions_[idToIndex_[servoId]];
 }
 
-void FeetechServo::setHomePosition(uint8_t const &servoId)
+void FeetechServo::resetHomePosition(uint8_t const &servoId)
 {
     // Get current position
-    readCurrentPosition(servoId);
+    int16_t current_position = readCurrentPositionTicks(servoId);
 
-    homePositions_[idToIndex_[servoId]] = homePositions_[idToIndex_[servoId]] + currentPositions_[idToIndex_[servoId]];
-
-    // Adjust reference position to current position to make sure servos don't move when setting home
-    referencePositions_[idToIndex_[servoId]].store(0.0, std::memory_order_relaxed);
-
-    // Adjust current position to account for home position
-    currentPositions_[idToIndex_[servoId]] = 0.0;
-
-    // TODO: Add setting home in servo registers when mode == POSITION  (i.e. not CONTINUOUS_POSITION)
+    // Print setting home position
+    std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Setting home position as: " << current_position << std::endl;
+    // Assign current position as home
+    homePositions_[idToIndex_[servoId]] = current_position;
+    std::cout << "Home position vector: ";
+    for (const auto& val : homePositions_) {
+        std::cout << val << " ";
+    }
+    std::cout << std::endl;
 }
 
-std::vector<double> FeetechServo::getHomePositions()
+std::vector<int16_t> FeetechServo::getHomePositions()
 {
     return homePositions_;
 }
@@ -572,7 +633,7 @@ void FeetechServo::setVelocityDirection(uint8_t const &servoId, int const &direc
 {
     if (direction != 1 && direction != -1)
     {
-        std::cerr << "\033[31m" << "[ERROR] Direction must be 1 for default and -1 for inverted. Keeping old direction." << "\033[0m" << std::endl;
+        std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoId)<< "] "<< "[ERROR] Direction must be 1 for default and -1 for inverted. Keeping old direction." << "\033[0m" << std::endl;
         return;
     }
     // set direction
@@ -593,7 +654,7 @@ void FeetechServo::setVelocityDirections(std::vector<int> const &directions)
     {
         if (directions[i] != 1 && directions[i] != -1)
         {
-            std::cerr << "\033[31m" << "[ERROR] Direction must be 1 for default and -1 for inverted. Keeping old directions." << "\033[0m" << std::endl;
+            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoIds_[i])<< "] "<< "[ERROR] Direction must be 1 for default and -1 for inverted. Keeping old directions." << "\033[0m" << std::endl;
             return;
         }
     }
@@ -822,7 +883,7 @@ int FeetechServo::receiveMessage(uint8_t const& servoId,
     boost::system::error_code read_ec, timer_ec;
     std::size_t bytes_read = 0;
 
-    int serial_timeout_ms = static_cast<int>(settings_.tx_time_per_byte * (readLength + 5) + 10);
+    int serial_timeout_ms = static_cast<int>(settings_.tx_time_per_byte * (readLength + 5) + 25);
 
     boost::asio::steady_timer timer(*io_context_);
     bool read_done = false, timer_expired = false;
