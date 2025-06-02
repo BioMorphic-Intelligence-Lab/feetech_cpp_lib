@@ -477,10 +477,8 @@ private:
     std::vector<uint8_t> servoIds_; // IDs of servos to control
     std::unordered_map<int, size_t> idToIndex_; // Map of servo IDs to index in servoIds_
     std::vector<double> gearRatios_;
-    std::vector<double> previousHornPositions_;
-    std::vector<double> proportionalGains_;
-    std::vector<double> derivativeGains_;
-    std::vector<double> integralGains_;
+    std::vector<uint16_t> previousHornPositions_;
+    std::vector<int> fullRotations_;
 
     // Use pointers because vectors cannot be made atomic
     std::vector<std::atomic<double>> referencePositions_;

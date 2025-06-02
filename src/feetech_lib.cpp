@@ -38,16 +38,13 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
 
     for (size_t i = 0; i < servoIds_.size(); ++i) {
         idToIndex_[servoIds_[i]] = i;
-        
-        proportionalGains_.push_back(3.0);
-        derivativeGains_.push_back(0.0);
-        integralGains_.push_back(0.0);
 
         referencePositions_[i].store(0);  // Default constructs std::atomic<double>
         referenceVelocities_[i].store(0);
         referenceAccelerations_[i].store(0);
         
         previousHornPositions_.push_back(0.0);
+        fullRotations_.push_back(0.0);
         currentPositions_.push_back(0.0);
         currentVelocities_.push_back(0.0);
         currentTemperatures_.push_back(0.0);
@@ -165,9 +162,11 @@ bool FeetechServo::execute()
             if (operatingModes_[i] == DriverMode::CONTINUOUS_POSITION)
             {
                 // std::cout<< "[ID: " << static_cast<int>(servoIds_[i])<<"] "<< "Reference position output in rad " << referencePositions_[i].load(std::memory_order_relaxed) << std::endl;
-                int position = static_cast<int>(directions_[i]* referencePositions_[i].load(std::memory_order_relaxed)*gearRatios_[i]*TICKS_PER_RADIAN + 
-                    homePositions_[i]);
-                writeTargetPosition(servoIds_[i], position, maxSpeeds_[i]*gearRatios_[i]*TICKS_PER_RADIAN);
+                double reference_position_horn = referencePositions_[i]*gearRatios_[i];
+                uint16_t reference_ticks_horn = reference_position_horn*TICKS_PER_RADIAN;
+                uint16_t reference_ticks_servo = directions_[i]*(reference_ticks_horn + homePositions_[i]);
+
+                writeTargetPosition(servoIds_[i], reference_ticks_servo, maxSpeeds_[i]*gearRatios_[i]*TICKS_PER_RADIAN);
                 // std::cout << "[ID: " << static_cast<int>(servoIds_[i])<<"] "<< "Wrote target position as ticks: " << position << std::endl;
             }
             // Velocity mode
@@ -310,11 +309,25 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
         std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoId)<< "] "<< "[ERROR] Failed to read current position (pos == -2)" << "\033[0m" << std::endl;
         return -2;
     }
-    double current_position_rads = ((absolute_position_ticks - homePositions_[idToIndex_[servoId]]) * RADIANS_PER_TICK) / gearRatios_[idToIndex_[servoId]];
-    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
-    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
 
-    return currentPositions_[idToIndex_[servoId]] = current_position_rads;
+    // Get homed position in ticks in the set direction
+    int16_t homed_position_ticks = (absolute_position_ticks - homePositions_[idToIndex_[servoId]]) * directions_[servoId];
+
+    if (previousHornPositions_[idToIndex_[servoId] - homed_position_ticks] > 7. * static_cast<double>(TICKS_PER_REVOLUTION)/8.)
+    {
+        // Add one rotation
+        fullRotations_[idToIndex_[servoId]] = fullRotations_[idToIndex_[servoId]] + 1;
+    }
+    else if (previousHornPositions_[idToIndex_[servoId] - homed_position_ticks] < static_cast<double>(TICKS_PER_REVOLUTION)/8.)
+    {
+        // Subtract one rotation
+        fullRotations_[idToIndex_[servoId]] = fullRotations_[idToIndex_[servoId]] - 1;
+    }
+
+    double position_horn_rad = (static_cast<double>(homed_position_ticks) + fullRotations_[idToIndex_[servoId]]*static_cast<double>(TICKS_PER_REVOLUTION))*RADIANS_PER_TICK;
+    double position_out_rad = position_horn_rad/gearRatios_[idToIndex_[servoId]];
+
+    return currentPositions_[idToIndex_[servoId]] = position_out_rad;
 }
 
 int16_t FeetechServo::readCurrentPositionTicks(uint8_t const &servoId)
@@ -666,66 +679,6 @@ void FeetechServo::setVelocityDirections(std::vector<int> const &directions)
     {
         referenceVelocities_[i].store(referenceVelocities_[i].load(std::memory_order_relaxed) * directions[i], std::memory_order_relaxed);
     }
-}
-
-double FeetechServo::getProportionalGain(uint8_t const &servoId)
-{
-    return proportionalGains_[idToIndex_[servoId]];
-}
-
-void FeetechServo::setProportionalGain(uint8_t const &servoId, double const &gain)
-{
-    proportionalGains_[idToIndex_[servoId]] = gain;
-}
-
-std::vector<double> FeetechServo::getProportionalGains()
-{
-    return proportionalGains_;
-}
-
-void FeetechServo::setProportionalGains(std::vector<double> const &gains)
-{
-    proportionalGains_ = gains;
-}
-
-double FeetechServo::getDerivativeGain(uint8_t const &servoId)
-{
-    return derivativeGains_[idToIndex_[servoId]];
-}
-
-void FeetechServo::setDerivativeGain(uint8_t const &servoId, double const &gain)
-{
-    derivativeGains_[idToIndex_[servoId]] = gain;
-}
-
-std::vector<double> FeetechServo::getDerivativeGains()
-{
-    return derivativeGains_;
-}
-
-void FeetechServo::setDerivativeGains(std::vector<double> const &gains)
-{
-    derivativeGains_ = gains;
-}
-
-double FeetechServo::getIntegralGain(uint8_t const &servoId)
-{
-    return integralGains_[idToIndex_[servoId]];
-}
-
-void FeetechServo::setIntegralGain(uint8_t const &servoId, double const &gain)
-{
-    integralGains_[idToIndex_[servoId]] = gain;
-}
-
-std::vector<double> FeetechServo::getIntegralGains()
-{
-    return integralGains_;
-}
-
-void FeetechServo::setIntegralGains(std::vector<double> const &gains)
-{
-    integralGains_ = gains;
 }
 
 bool FeetechServo::trigerAction()
