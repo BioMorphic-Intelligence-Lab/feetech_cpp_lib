@@ -389,36 +389,6 @@ public:
 
     void setVelocityDirections(std::vector<int> const &directions);
 
-    // Proportional gains
-    double getProportionalGain(uint8_t const &servoId);
-
-    void setProportionalGain(uint8_t const &servoId, double const &gain);
-
-    std::vector<double> getProportionalGains();
-
-    void setProportionalGains(std::vector<double> const &gains);
-
-    // Derivative gains
-    double getDerivativeGain(uint8_t const &servoId);
-
-    void setDerivativeGain(uint8_t const &servoId, double const &gain);
-
-    std::vector<double> getDerivativeGains();
-
-    void setDerivativeGains(std::vector<double> const &gains);
-
-    // Integral gains
-    double getIntegralGain(uint8_t const &servoId);
-
-    void setIntegralGain(uint8_t const &servoId, double const &gain);
-
-    std::vector<double> getIntegralGains();
-
-    void setIntegralGains(std::vector<double> const &gains);
-
-
-
-
 private:
     /// \brief Send a message to the servos.
     /// \param[in] servoId ID of the servo
