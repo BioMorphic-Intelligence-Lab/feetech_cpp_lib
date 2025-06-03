@@ -44,7 +44,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
         referenceAccelerations_[i].store(0);
         
         previousHornPositions_.push_back(0.0);
-        fullRotations_.push_back(0.0);
+        fullRotations_.push_back(0);
         currentPositions_.push_back(0.0);
         currentVelocities_.push_back(0.0);
         currentTemperatures_.push_back(0.0);
@@ -162,11 +162,10 @@ bool FeetechServo::execute()
             if (operatingModes_[i] == DriverMode::CONTINUOUS_POSITION)
             {
                 // std::cout<< "[ID: " << static_cast<int>(servoIds_[i])<<"] "<< "Reference position output in rad " << referencePositions_[i].load(std::memory_order_relaxed) << std::endl;
-                double reference_position_horn = referencePositions_[i]*gearRatios_[i];
-                uint16_t reference_ticks_horn = reference_position_horn*TICKS_PER_RADIAN;
-                uint16_t reference_ticks_servo = directions_[i]*(reference_ticks_horn + homePositions_[i]);
 
-                writeTargetPosition(servoIds_[i], reference_ticks_servo, maxSpeeds_[i]*gearRatios_[i]*TICKS_PER_RADIAN);
+                int position = static_cast<int>(directions_[i]* referencePositions_[i].load(std::memory_order_relaxed)*gearRatios_[i]*TICKS_PER_RADIAN + 
+                    homePositions_[i]);
+                writeTargetPosition(servoIds_[i], position, maxSpeeds_[i]*gearRatios_[i]*TICKS_PER_RADIAN);                
                 // std::cout << "[ID: " << static_cast<int>(servoIds_[i])<<"] "<< "Wrote target position as ticks: " << position << std::endl;
             }
             // Velocity mode
@@ -299,6 +298,8 @@ bool FeetechServo::writePositionOffset(uint8_t const &servoId, int const &positi
 double FeetechServo::readCurrentPosition(uint8_t const &servoId)
 {
     int16_t absolute_position_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION);
+
+    // Handle errors
     if (absolute_position_ticks == -1)
     {
         std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoId)<< "] "<<"[ERROR] Failed to read current position (pos == -1)" << "\033[0m" << std::endl;
@@ -310,24 +311,22 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
         return -2;
     }
 
-    // Get homed position in ticks in the set direction
-    int16_t homed_position_ticks = (absolute_position_ticks - homePositions_[idToIndex_[servoId]]) * directions_[servoId];
-
-    if (previousHornPositions_[idToIndex_[servoId] - homed_position_ticks] > 7. * static_cast<double>(TICKS_PER_REVOLUTION)/8.)
+    // Handle full rotations
+    if ((absolute_position_ticks - previousHornPositions_[idToIndex_[servoId]]) > 3500)
     {
-        // Add one rotation
-        fullRotations_[idToIndex_[servoId]] = fullRotations_[idToIndex_[servoId]] + 1;
+        fullRotations_[idToIndex_[servoId]] = fullRotations_[idToIndex_[servoId]] + directions_[idToIndex_[servoId]];
     }
-    else if (previousHornPositions_[idToIndex_[servoId] - homed_position_ticks] < static_cast<double>(TICKS_PER_REVOLUTION)/8.)
+    else if ((absolute_position_ticks - previousHornPositions_[idToIndex_[servoId]]) < -3500)
     {
-        // Subtract one rotation
-        fullRotations_[idToIndex_[servoId]] = fullRotations_[idToIndex_[servoId]] - 1;
+        fullRotations_[idToIndex_[servoId]] = fullRotations_[idToIndex_[servoId]] - directions_[idToIndex_[servoId]];
     }
+    previousHornPositions_[idToIndex_[servoId]] = absolute_position_ticks;
 
-    double position_horn_rad = (static_cast<double>(homed_position_ticks) + fullRotations_[idToIndex_[servoId]]*static_cast<double>(TICKS_PER_REVOLUTION))*RADIANS_PER_TICK;
-    double position_out_rad = position_horn_rad/gearRatios_[idToIndex_[servoId]];
-
-    return currentPositions_[idToIndex_[servoId]] = position_out_rad;
+    double current_position_rads = (((absolute_position_ticks + fullRotations_[idToIndex_[servoId]]*TICKS_PER_REVOLUTION) - homePositions_[idToIndex_[servoId]]) * RADIANS_PER_TICK) / gearRatios_[idToIndex_[servoId]];
+    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Full rotations registered: " << fullRotations_[idToIndex_[servoId]] << " revs "<< std::endl;
+    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
+    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
+    return currentPositions_[idToIndex_[servoId]] = current_position_rads;
 }
 
 int16_t FeetechServo::readCurrentPositionTicks(uint8_t const &servoId)
