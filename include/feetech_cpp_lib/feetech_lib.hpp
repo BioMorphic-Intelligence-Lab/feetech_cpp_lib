@@ -14,6 +14,7 @@
 #include <chrono>
 #include <thread>
 #include <atomic>
+#include <unordered_map>
 
 #include "boost_timer.hpp"
 #include "serial_logger.hpp"

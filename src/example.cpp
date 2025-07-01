@@ -8,9 +8,9 @@ int main()
 
     // Initialize the servo object
     std::string port = "/dev/ttyUSB0";
-    long baud = 1000000;
+    long baud = 115200;
     double frequency = 25;
-    std::vector<uint8_t> servo_ids = {0x21};
+    std::vector<uint8_t> servo_ids = {0x15};
     std::cout << "Initializing servo object..." << std::endl;
     FeetechServo servo(port, baud, frequency, servo_ids, false);
     // Set driver to velocity mode
@@ -26,6 +26,20 @@ int main()
     double velocity = 0.5;
     servo.setReferenceVelocity(servo_ids[0], velocity);   
     std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
+
+    // Set servo to position mode
+    servo.setOperatingMode(servo_ids[0], DriverMode::CONTINUOUS_POSITION);
+    std::vector<double> current_position = servo.getCurrentPositions();
+    std::cout<< "Got position: " << current_position[0] << std::endl;
+    servo.setReferencePosition(servo_ids[0], current_position[0]);
+
+    std::vector<double> current;
+    for(int i = 0; i<1000; i++)
+    {
+        current = servo.getCurrentCurrents();
+        std::cout << "Read current " << current[0] << std::endl;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
     
     // Move servo at 1.5 rad/s
     std::cout << "Moving servo at 1.5 rad/s" << std::endl;
@@ -53,9 +67,8 @@ int main()
 
     // Stop servo
     std::cout << "Stopping servo" << std::endl;
-    servo.setReferenceVelocity(servo_ids[0], 0);
+    servo.setReferenceVelocity(servo_ids[0], 0.0);
 
     // Close serial connection and destroy driver
-    servo.close();
     return 0;
 }

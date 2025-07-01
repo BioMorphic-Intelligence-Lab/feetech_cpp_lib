@@ -401,6 +401,8 @@ float FeetechServo::readCurrentCurrent(uint8_t const &servoId)
     // Get current in counts
     int16_t current_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_CURRENT);
 
+    //std::cout << "Current ticks " << current_ticks << std::endl;
+
     // If 0 is returned, current is not read correctly, return and keep old value
     if (current_ticks == -1 || current_ticks == -2)
         return current_ticks; // Return the error code
