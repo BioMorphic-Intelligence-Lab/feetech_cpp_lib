@@ -20,7 +20,7 @@ namespace instruction
     uint8_t const RESET      = 0x06;
 };
 
-FeetechServo::FeetechServo(std::string port, long const &baud, const double frequency, const std::vector<uint8_t>& servo_ids, bool debug, bool logging) : 
+FeetechServo::FeetechServo(std::string port, long const &baud, const double frequency, const std::vector<uint8_t>& servo_ids, bool homing, bool logging) : 
     serial_(nullptr), 
     referencePositions_(servo_ids.size()),
     referenceVelocities_(servo_ids.size()),
@@ -33,7 +33,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     settings_.port = port;
     settings_.baud = baud;
     settings_.frequency = frequency;
-    settings_.debug = debug;
+    settings_.homing = homing;
     settings_.logging = logging;
 
     for (size_t i = 0; i < servoIds_.size(); ++i) {
@@ -81,14 +81,15 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     // Read all data once to populate data structs
     bool success=false;
     int fail_counter = 0;
-    int counter = 0;
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     for(int i = 0; i<10; i++)
     {
 
         std::cout<<"Checking servo connections..."<<std::endl;
         success = readAllServoData();
-        fail_counter++;
+        if (!success)
+            fail_counter++;
+
         if (fail_counter>10)
         {
             std::cerr << "\033[31m" << "[ERROR] Failed to read all servo data for 10 attempts. Are all servos connected?" << "\033[0m" << std::endl;
@@ -96,40 +97,25 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
         }
     }
     // Set servos to velocity at velocity 0 and home, set maximum angle to 0 to enable multi-turn
+    readAllCurrentPositions();
     for (size_t i = 0; i < servoIds_.size(); ++i)
     {
-        writeMaxAngle(servoIds_[i], 0);
-        resetHomePosition(servoIds_[i]);
+        if (homing)
+        {
+            writeMaxAngle(servoIds_[i], 0);
+            writeMinAngle(servoIds_[i], 0);
+            resetHomePosition(servoIds_[i]);
+        }
+        else
+        {
+            setReferencePosition(servoIds_[i], currentPositions_[i]);
+        }
         writeTorqueEnable(servoIds_[i], true);
-        writeTargetVelocity(servoIds_[i], 0, false);
         writeMode(servoIds_[i], STSMode::STS_POSITION);
     }
-
-    // Emulating the timer here because if it runs in the other thread I cannot see the output
-    counter = 0;
-    if (settings_.debug)
-    {
-        std::cout<<"Settings.debug = " << settings_.debug << std::endl;
-        while (true)
-        {
-            execute();
-            std::this_thread::sleep_for(std::chrono::milliseconds(100)); // sleep one second
-            counter++;
-            if (counter>50)
-            {
-                std::cout<<"Setting reference velocity to 0.4 rad/s==================================="<<std::endl;
-                this->setReferencePosition(servoIds_[0], 0.4);
-            }
-        }
-    }
     
-    else
-    {
-        std::cout << "Starting timer "<< std::endl;
-        timer_ = std::make_unique<BoostTimer>(frequency, 
-                                              std::bind(&FeetechServo::execute, this));
-    }
-    // Set all servos to velocity mode and torque enable
+    std::cout << "Starting timer "<< std::endl;
+    timer_ = std::make_unique<BoostTimer>(frequency, std::bind(&FeetechServo::execute, this));
 }
 
 FeetechServo::~FeetechServo()

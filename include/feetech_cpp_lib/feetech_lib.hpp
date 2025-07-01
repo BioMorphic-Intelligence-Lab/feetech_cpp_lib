@@ -109,7 +109,7 @@ struct DriverSettings
     int max_servos = 35;
     double position_tolerance = 0.01; // rad
     int tx_time_per_byte = 1000./(float)baud*10; // 10 bits per byte for some overhead
-    bool debug = false;
+    bool homing = true;
     bool logging = false;
 };
 
@@ -122,7 +122,7 @@ public:
     /// \param baud Baud rate, default 1Mbps
     /// \param frequency Frequency of the servo driver loop, default 250 Hz
     /// \param servoIds IDs of servos to control, default 1
-    FeetechServo(std::string port="/dev/ttyUSB0", long const &baud=1000000, const double frequency=250, const std::vector<uint8_t>& servo_ids = {1}, bool debug = false, bool logging=false);
+    FeetechServo(std::string port="/dev/ttyUSB0", long const &baud=1000000, const double frequency=250, const std::vector<uint8_t>& servo_ids = {1}, bool homing=true, bool logging=false);
 
 
     /// \brief Destructor. Close the serial port.
