@@ -622,6 +622,7 @@ void FeetechServo::setHomePositions()
     }
     // TODO: make current servo data structs atomic because when setting home they can be written by other threads.
     // TODO: Add setting home in servo registers when mode == POSITION  (i.e. not CONTINUOUS_POSITION)
+    // TODO: currentPosition in rad vs homePosition in ticks?
 }
 
 int FeetechServo::getVelocityDirection(uint8_t const &servoId)
