@@ -625,6 +625,12 @@ void FeetechServo::setHomePositions()
     // TODO: currentPosition in rad vs homePosition in ticks?
 }
 
+
+void FeetechServo::setHomePosition(uint8_t const &servoId, int16_t ticks)
+{
+    homePositions_[idToIndex_[servoId]] = ticks;
+}
+
 int FeetechServo::getVelocityDirection(uint8_t const &servoId)
 {
     return directions_[idToIndex_[servoId]];

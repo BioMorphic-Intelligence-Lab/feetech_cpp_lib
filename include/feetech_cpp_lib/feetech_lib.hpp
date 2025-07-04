@@ -382,6 +382,8 @@ public:
     ///         to account for new home.
     void setHomePositions();
 
+    void setHomePosition(uint8_t const &servoId, int16_t ticks);
+
     int getVelocityDirection(uint8_t const &servoId);
 
     void setVelocityDirection(uint8_t const &servoId, int const &direction);
