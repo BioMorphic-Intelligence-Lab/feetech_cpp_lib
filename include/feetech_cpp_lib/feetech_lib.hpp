@@ -159,6 +159,13 @@ public:
     /// \return True if servo could successfully change position offset
     bool writePositionOffset(uint8_t const &servoId, int const &positionOffset);
 
+
+    /// \brief Change the return delay time
+    /// \param[in] servoId servo ID
+    /// \param[in] positionOffset new return delay time
+    /// \return True if servo could successfully change return delay time
+    bool writeReturnDelayTime(uint8_t const &servoId, int const &returnDelayTime);
+
     /// \brief Read the position offset of a servo.
     /// \param[in] servoId servo ID
     /// \param[out] positionOffset position offset

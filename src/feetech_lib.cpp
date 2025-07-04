@@ -110,9 +110,14 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
         {
             setReferencePosition(servoIds_[i], currentPositions_[i]);
         }
+        
+        writeReturnDelayTime(servoIds_[i], 0);
         writeTorqueEnable(servoIds_[i], true);
         writeMode(servoIds_[i], STSMode::STS_POSITION);
+        
     }
+
+
     
     std::cout << "Starting timer "<< std::endl;
     timer_ = std::make_unique<BoostTimer>(frequency, std::bind(&FeetechServo::execute, this));
@@ -274,6 +279,19 @@ bool FeetechServo::writePositionOffset(uint8_t const &servoId, int const &positi
         return false;
     // Write new position offset
     if (!writeTwouint8_tsRegister(servoId, STSRegisters::POSITION_CORRECTION, positionOffset))
+        return false;
+    // Lock EEPROM
+    if (!writeRegister(servoId, STSRegisters::WRITE_LOCK, 1))
+        return false;
+    return true;
+}
+
+bool FeetechServo::writeReturnDelayTime(uint8_t const &servoId, int const &returnDelayTime)
+{
+    if (!writeRegister(servoId, STSRegisters::WRITE_LOCK, 0))
+        return false;
+    // Write new position offset
+    if (!writeTwouint8_tsRegister(servoId, STSRegisters::RESPONSE_DELAY, returnDelayTime))
         return false;
     // Lock EEPROM
     if (!writeRegister(servoId, STSRegisters::WRITE_LOCK, 1))
