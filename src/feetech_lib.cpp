@@ -23,8 +23,11 @@ namespace instruction
 };
 
 FeetechServo::FeetechServo(std::string port, long const &baud,
-                           const double frequency, const std::vector<uint8_t>& servo_ids,
-                           bool homing, bool logging) : 
+                           const double frequency,
+                           const std::vector<uint8_t>& servo_ids,
+                           const std::vector<uint8_t>& homingMode,
+                           const std::vector<uint16_t>& homeTicks,
+                           bool logging) :
     serial_(nullptr), 
     servoData_(servo_ids.size()),
     logger_(nullptr)
@@ -34,12 +37,14 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
     settings_.port = port;
     settings_.baud = baud;
     settings_.frequency = frequency;
-    settings_.homing = homing;
     settings_.logging = logging;
 
     for (size_t i = 0; i < servo_ids.size(); ++i) {
         // Write servo IDs to member data structure
         servoData_[i].servoId = servo_ids[i];
+        servoData_[i].homingMode = homingMode[i];
+        servoData_[i].homeTicks = homingMode[i] == 2 ? homeTicks[i] : 0; // Only set homeTicks if homingMode is 2
+
         // Setup the map
         idToIndex_[servo_ids[i]] = i;
 
@@ -53,8 +58,6 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
         servoData_[i].currentTemperature = 0.0;
         servoData_[i].currentCurrent = 0.0;
         servoData_[i].currentPWM = 0.0;
-        servoData_[i].homePosition = 0; // In ticks at horn
-        servoData_[i].homingMode = 0; // Default no homing
 
         servoData_[i].gearRatio = 1.0; // From horn to output, i.e. if horn:output = 2:1, gear ratio is 2
         servoData_[i].operatingMode = DriverMode::CONTINUOUS_POSITION; // Initialize in position mode
@@ -105,15 +108,24 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
     readAllCurrentPositions();
     for (size_t i = 0; i < servoData_.size(); ++i)
     {
-        if (homing)
+        switch(servoData_[i].homingMode)
         {
-            writeMaxAngle(servoData_[i].servoId, 0);
-            writeMinAngle(servoData_[i].servoId, 0);
-            resetHomePosition(servoData_[i].servoId);
-        }
-        else
-        {
-            setReferencePosition(servoData_[i].servoId, servoData_[i].currentPosition);
+            case 0: // No homing
+            {
+                break;
+            }
+            case 1: // Home at start
+            {
+                uint64_t pos = this->readCurrentPositionTicks(servoData_[i].servoId);
+                servoData_[i].homeTicks = pos;
+                break;
+            }
+            case 2: // Home at fixed tick number
+            {
+                break;
+            }
+            default:
+                std::cerr << "\033[31m" << "[ERROR] Invalid homing mode " << static_cast<int>(servoData_[i].homingMode) << "\033[0m" << std::endl;
         }
         
         writeReturnDelayTime(servoData_[i].servoId, 0);
@@ -158,11 +170,9 @@ bool FeetechServo::execute()
 
                 int position = static_cast<int>(servoData_[i].direction * 
                     servoData_[i].referencePosition.load(std::memory_order_relaxed) * 
-                    servoData_[i].gearRatio * 
-                    TICKS_PER_RADIAN + servoData_[i].homePosition);
+                    servoData_[i].gearRatio * TICKS_PER_RADIAN + servoData_[i].homeTicks);
                 writeTargetPosition(
-                    servoData_[i].servoId,
-                    position,
+                    servoData_[i].servoId, position,
                     servoData_[i].maxSpeed * servoData_[i].gearRatio * TICKS_PER_RADIAN
                 );                
                 // std::cout << "[ID: " << static_cast<int>(servoData_[i].servoId)<<"] "<< "Wrote target position as ticks: " << position << std::endl;
@@ -279,6 +289,7 @@ bool FeetechServo::writeReturnDelayTime(uint8_t const &servoId, int const &retur
 double FeetechServo::readCurrentPosition(uint8_t const &servoId)
 {
     int16_t absolute_position_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION);
+    double speed = readCurrentSpeed(servoId);
 
     // Handle errors
     if (absolute_position_ticks == -1)
@@ -292,22 +303,33 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
         return -2;
     }
 
-    // Handle full rotations
-    if ((absolute_position_ticks - servoData_[idToIndex_[servoId]].previousHornPosition) > 3500)
+
+    if(speed < 0 && absolute_position_ticks > servoData_[idToIndex_[servoId]].previousHornPosition)
     {
-        servoData_[idToIndex_[servoId]].fullRotation = servoData_[idToIndex_[servoId]].fullRotation + servoData_[idToIndex_[servoId]].direction;
+        // If speed is negative and position is larger than previous position, we are in a full rotation
+        servoData_[idToIndex_[servoId]].fullRotation--;
     }
-    else if ((absolute_position_ticks - servoData_[idToIndex_[servoId]].previousHornPosition) < -3500)
+    else if(speed > 0 && absolute_position_ticks < servoData_[idToIndex_[servoId]].previousHornPosition)
     {
-        servoData_[idToIndex_[servoId]].fullRotation = servoData_[idToIndex_[servoId]].fullRotation - servoData_[idToIndex_[servoId]].direction;
+        // If speed is positive and position is smaller than previous position, we are in a full rotation
+        servoData_[idToIndex_[servoId]].fullRotation++;
     }
+
     servoData_[idToIndex_[servoId]].previousHornPosition = absolute_position_ticks;
 
-    double current_position_rads = (((absolute_position_ticks + servoData_[idToIndex_[servoId]].fullRotation * TICKS_PER_REVOLUTION) - servoData_[idToIndex_[servoId]].homePosition) * RADIANS_PER_TICK) / servoData_[idToIndex_[servoId]].gearRatio;
+    double current_position_rads = (
+        (
+            (absolute_position_ticks
+                + servoData_[idToIndex_[servoId]].fullRotation * TICKS_PER_REVOLUTION)
+        - servoData_[idToIndex_[servoId]].homeTicks
+        ) * RADIANS_PER_TICK
+    ) / servoData_[idToIndex_[servoId]].gearRatio;
     //std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Full rotations registered: " << fullRotations_[idToIndex_[servoId]] << " revs "<< std::endl;
     //std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
     //std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
-    return servoData_[idToIndex_[servoId]].currentPosition = current_position_rads;
+    servoData_[idToIndex_[servoId]].currentPosition = current_position_rads;
+
+    return servoData_[idToIndex_[servoId]].currentPosition;
 }
 
 int16_t FeetechServo::readCurrentPositionTicks(uint8_t const &servoId)
@@ -684,7 +706,7 @@ void FeetechServo::setMaxSpeeds(std::vector<double> const &speeds)
 
 double FeetechServo::getHomePosition(uint8_t const &servoId)
 {
-    return servoData_[idToIndex_[servoId]].homePosition;
+    return servoData_[idToIndex_[servoId]].homeTicks;
 }
 
 void FeetechServo::resetHomePosition(uint8_t const &servoId)
@@ -695,7 +717,7 @@ void FeetechServo::resetHomePosition(uint8_t const &servoId)
     // Print setting home position
     std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Setting home position as: " << current_position << std::endl;
     // Assign current position as home
-    servoData_[idToIndex_[servoId]].homePosition = current_position;
+    servoData_[idToIndex_[servoId]].homeTicks = current_position;
 }
 
 std::vector<int16_t> FeetechServo::getHomePositions()
@@ -703,7 +725,7 @@ std::vector<int16_t> FeetechServo::getHomePositions()
     std::vector<int16_t> homePositions(servoData_.size(), 0);
     for (size_t i = 0; i < servoData_.size(); ++i)
     {
-        homePositions[i] = servoData_[i].homePosition;
+        homePositions[i] = servoData_[i].homeTicks;
     }
     return homePositions;
 }
@@ -712,7 +734,7 @@ void FeetechServo::setHomePositions()
 {
     for (size_t i = 0; i < servoData_.size(); ++i)
     {
-        servoData_[i].homePosition = servoData_[i].currentPosition + servoData_[i].homePosition;
+        servoData_[i].homeTicks = servoData_[i].currentPosition + servoData_[i].homeTicks;
         // Set reference positions to 
         servoData_[i].referencePosition.store(0.0, std::memory_order_relaxed);
         servoData_[i].currentPosition = 0.0;
@@ -725,7 +747,7 @@ void FeetechServo::setHomePositions()
 
 void FeetechServo::setHomePosition(uint8_t const &servoId, int16_t ticks)
 {
-    servoData_[idToIndex_[servoId]].homePosition = ticks;
+    servoData_[idToIndex_[servoId]].homeTicks = ticks;
 }
 
 int FeetechServo::getVelocityDirection(uint8_t const &servoId)
