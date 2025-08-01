@@ -1,5 +1,7 @@
 #include "feetech_lib.hpp"
 #include <chrono>
+#include <bitset>
+#include <iomanip>
 
 
 #define TICKS_PER_REVOLUTION 4096
@@ -44,7 +46,6 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
         servoData_[i].referencePosition.store(0);  // Default constructs std::atomic<double>
         servoData_[i].referenceVelocity.store(0);
         servoData_[i].referenceAcceleration.store(0);
-        
         servoData_[i].previousHornPosition = 0;
         servoData_[i].fullRotation = 0;
         servoData_[i].currentPosition = 0.0;
@@ -238,6 +239,7 @@ bool FeetechServo::readAllServoData()
     success &= readAllCurrentPositions();
     success &= readAllCurrentSpeeds();
     success &= readAllCurrentCurrents(); 
+    success &= readAllCurrentPWMs();
 
     if (!success)
         // Make error appear in red
@@ -377,9 +379,15 @@ int FeetechServo::readCurrentTemperature(uint8_t const &servoId)
 float FeetechServo::readCurrentCurrent(uint8_t const &servoId)
 {
     // Get current in counts
-    int16_t current_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_CURRENT);
+    uint8_t signBit = 15;
+    int16_t current_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_CURRENT, signBit);
 
-    //std::cout << "Current ticks " << current_ticks << std::endl;
+    // std::cout << "Raw hex: 0x"
+    //         << std::setw(4) << std::setfill('0') << std::hex << std::uppercase << current_ticks
+    //         << " | Bin: " << std::bitset<16>(current_ticks)
+    //         << " | int16_t: " << std::dec << current_ticks
+    //         << " | uint16_t: " << current_ticks
+    //         << std::endl;
 
     // If 0 is returned, current is not read correctly, return and keep old value
     if (current_ticks == -1 || current_ticks == -2)
@@ -402,6 +410,46 @@ bool FeetechServo::readAllCurrentCurrents()
         if (current == -1 || current == -2)
         {
             std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoData_[i].servoId)<< "] "<< "[ERROR] Failed to read all currents (current == -1 or -2)" << "\033[0m" << std::endl;
+            ret = false;
+        }
+    }
+    return ret;
+}
+
+double FeetechServo::readCurrentPWM(uint8_t const &servoId)
+{
+    uint8_t signBit = 10; // BIT10 is the direction bit
+    int16_t PWM_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_DRIVE_VOLTAGE, signBit);
+
+    // std::cout << "Raw hex: 0x"
+    //         << std::setw(4) << std::setfill('0') << std::hex << std::uppercase << PWM_ticks
+    //         << " | Bin: " << std::bitset<16>(PWM_ticks)
+    //         << " | int16_t: " << std::dec << PWM_ticks
+    //         << " | uint16_t: " << PWM_ticks
+    //         << std::endl;
+
+    // If 0 is returned, PWM is not read correctly, return and keep old value
+    if (PWM_ticks == -1 || PWM_ticks == -2)
+        return PWM_ticks; // Return the error code
+
+    double PWM_percentage = 0.1 * PWM_ticks;
+    currentPWMs_[idToIndex_[servoId]] = PWM_percentage;
+    // std::cout<< "PWM %: "<< std::setprecision(3) << PWM_percentage << std::endl;
+    return PWM_percentage;
+}
+
+bool FeetechServo::readAllCurrentPWMs()
+{
+    bool ret = true;
+    double PWM;
+    // Loop over servo IDs and read current speed
+    for (size_t i = 0; i < servoIds_.size(); ++i)
+    {
+        PWM = readCurrentPWM(servoIds_[i]);
+        // If 0 is returned, velocity is not read correctly, so return value of function becomes false
+        if (PWM == -1 || PWM== -2)
+        {
+            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoIds_[i])<< "] "<< "[ERROR] Failed to read all PWMs (PWM == -1 or -2)" << "\033[0m" << std::endl;
             ret = false;
         }
     }
@@ -511,6 +559,11 @@ std::vector<double> FeetechServo::getCurrentCurrents()
         currentCurrents[i] = servoData_[i].currentCurrent;
     }
     return currentCurrents;
+}
+
+std::vector<double> FeetechServo::getCurrentPWMs()
+{
+    return currentPWMs_;
 }
 
 DriverMode FeetechServo::getOperatingMode(uint8_t const &servoId)
@@ -796,7 +849,7 @@ uint8_t FeetechServo::readRegister(uint8_t const &servoId, uint8_t const &regist
     return result;
 }
 
-int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t const &registerId)
+int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t const &registerId, uint8_t signBit)
 {
     if (servoData_[idToIndex_[servoId]].servoType == ServoType::UNKNOWN)
     {
@@ -814,19 +867,47 @@ int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t co
     switch(servoData_[idToIndex_[servoId]].servoType)
     {
         case ServoType::SCS:
-            value = static_cast<int16_t>(result[1] +  (result[0] << 8));
-            // Bit 15 is sign
-            signedValue = value & ~0x8000;
-            if (value & 0x8000)
-                signedValue = -signedValue;
-            return signedValue;
+            if (signBit == 15)
+            {
+                value = static_cast<int16_t>((result[0] << 8) + result[1] ); // SCS
+                // Bit 15 is sign
+                signedValue = value & ~0x8000;
+                if (value & 0x8000)
+                    signedValue = -signedValue;
+                return signedValue;
+            }
+            else if (signBit == 10)
+            {
+                value = static_cast<int16_t>((result[0] << 8) + result[1] ); // SCS
+                // Bit 10 is sign
+                signedValue = value & ~0x0400;
+                if (value & 0x0400)
+                    signedValue = -signedValue;
+                return signedValue;
+            }
+            else {return -3;}
+            break;
         case ServoType::STS:
-            value = static_cast<int16_t>(result[0] +  (result[1] << 8));
-            // Bit 15 is sign
-            signedValue = value & ~0x8000;
-            if (value & 0x8000)
-                signedValue = -signedValue;
-            return signedValue;
+            if (signBit == 15)
+            {
+                value = static_cast<int16_t>((result[1] << 8) + result[0]); // STS
+                // Bit 15 is sign
+                signedValue = value & ~0x8000;
+                if (value & 0x8000)
+                    signedValue = -signedValue;
+                return signedValue;
+            }
+            else if (signBit == 10)
+            {
+                value = static_cast<int16_t>((result[1] << 8) + result[0]); // STS
+                // Bit 10 is sign
+                signedValue = value & ~0x0400;
+                if (value & 0x0400)
+                    signedValue = -signedValue;
+                return signedValue;
+            }
+            else {return -3;}
+            break;
         default:
             return -2;
     }

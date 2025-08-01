@@ -60,15 +60,22 @@ namespace STSRegisters
     uint8_t const RUNNING_SPEED            = 0x2E;
     uint8_t const TORQUE_LIMIT             = 0x30;
     uint8_t const WRITE_LOCK               = 0x37;
-    uint8_t const CURRENT_POSITION         = 0x38;
-    uint8_t const CURRENT_SPEED            = 0x3A;
-    uint8_t const CURRENT_DRIVE_VOLTAGE    = 0x3C;
-    uint8_t const CURRENT_VOLTAGE          = 0x3E;
-    uint8_t const CURRENT_TEMPERATURE      = 0x3F;
-    uint8_t const ASYNCHRONOUS_WRITE_ST    = 0x40;
-    uint8_t const STATUS                   = 0x41;
-    uint8_t const MOVING_STATUS            = 0x42;
-    uint8_t const CURRENT_CURRENT          = 0x45;
+    uint8_t const CURRENT_POSITION         = 0x38; // Read-only
+    uint8_t const CURRENT_SPEED            = 0x3A; // Read-only
+    uint8_t const CURRENT_DRIVE_VOLTAGE    = 0x3C; // Read-only
+    uint8_t const CURRENT_VOLTAGE          = 0x3E; // Read-only
+    uint8_t const CURRENT_TEMPERATURE      = 0x3F; // Read-only
+    uint8_t const ASYNCHRONOUS_WRITE_ST    = 0x40; // Read-only
+    uint8_t const STATUS                   = 0x41; // Read-only
+    uint8_t const MOVING_STATUS            = 0x42; // Read-only
+    uint8_t const CURRENT_CURRENT          = 0x45; // Read-only
+    uint8_t const MOVEMENT_SPEED_THRESHOLD = 0x50; // Read-only
+    uint8_t const DT                       = 0x51; // Read-only
+    uint8_t const SPEED_UNIT_COEFFICIENT   = 0x52; // Read-only
+    uint8_t const HTS                      = 0x53; // Read-only
+    uint8_t const MAXIMUM_SPEED_LIMIT      = 0x54; // Read-only
+    uint8_t const ACCELERATION_LIMIT       = 0x55; // Read-only
+    uint8_t const ACCELERATION_MULTIPLIER  = 0x56; // Read-only
 };
 
 enum DriverMode{
@@ -210,7 +217,8 @@ public:
     bool readAllCurrentPositions();
     bool readAllCurrentSpeeds();
     bool readAllCurrentTemperatures();
-    bool readAllCurrentCurrents(); 
+    bool readAllCurrentCurrents();
+    bool readAllCurrentPWMs();
 
     /// \brief Get current servo position at output.
     /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
@@ -239,6 +247,11 @@ public:
     /// \param[in] servoId ID of the servo
     /// \return Current, in A, -1 on read failure, -2 on servo type failure.
     float readCurrentCurrent(uint8_t const &servoId);
+
+    /// \brief Get current motor driver PWM. Indicative of servo torque.
+    /// \param[in] servoId ID of the servo
+    /// \return PWM in 0.1% duty cycle. Percentage of maximum voltage.
+    double readCurrentPWM(uint8_t const &servoId);
 
     /// \brief Check if the servo is moving
     /// \param[in] servoId ID of the servo
@@ -328,7 +341,7 @@ public:
     /// \param[in] servoId ID of the servo
     /// \param[in] registerId LSB register id.
     /// \return Register value, -1 on read failure, -2 on servo type failure.
-    int16_t readTwouint8_tsRegister(uint8_t const &servoId, uint8_t const &registerId);
+    int16_t readTwouint8_tsRegister(uint8_t const &servoId, uint8_t const &registerId, uint8_t signBit = 15);
 
     /// @brief Sets the target positions for multiple servos simultaneously.
     /// @param[in] NumberOfServos Number of servo.
@@ -362,6 +375,8 @@ public:
     std::vector<double> getCurrentTemperatures();
     
     std::vector<double> getCurrentCurrents();
+
+    std::vector<double> getCurrentPWMs();
 
     // Operating modes
     DriverMode getOperatingMode(uint8_t const &servoId);
