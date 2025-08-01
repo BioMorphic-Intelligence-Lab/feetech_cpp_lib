@@ -1,6 +1,7 @@
 #include "feetech_lib.hpp"
 #include <chrono>
 #include <bitset>
+#include <iomanip>
 
 
 #define TICKS_PER_REVOLUTION 4096
@@ -406,11 +407,15 @@ int FeetechServo::readCurrentTemperature(uint8_t const &servoId)
 float FeetechServo::readCurrentCurrent(uint8_t const &servoId)
 {
     // Get current in counts
-    int16_t current_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_CURRENT);
+    uint8_t signBit = 15;
+    int16_t current_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_CURRENT, signBit);
 
-    //std::cout << "Current ticks " << current_ticks << std::endl;
-        // Cast to uint16_t so we see the raw two's complement bits
-    //std::cout << "Current : 0x" << std::setw(4) << std::setfill('0') << std::hex << std::uppercase << static_cast<uint16_t>(current_ticks) << std::endl;
+    // std::cout << "Raw hex: 0x"
+    //         << std::setw(4) << std::setfill('0') << std::hex << std::uppercase << current_ticks
+    //         << " | Bin: " << std::bitset<16>(current_ticks)
+    //         << " | int16_t: " << std::dec << current_ticks
+    //         << " | uint16_t: " << current_ticks
+    //         << std::endl;
 
     // If 0 is returned, current is not read correctly, return and keep old value
     if (current_ticks == -1 || current_ticks == -2)
@@ -418,6 +423,7 @@ float FeetechServo::readCurrentCurrent(uint8_t const &servoId)
     
     double current_amps = current_ticks*AMPERE_PER_TICK;
     currentCurrents_[idToIndex_[servoId]] = current_amps;
+    // std::cout<< "Current amps: "<< std::setprecision(3) << current_amps << std::endl;
     return current_amps;
 }
 
@@ -441,24 +447,23 @@ bool FeetechServo::readAllCurrentCurrents()
 
 double FeetechServo::readCurrentPWM(uint8_t const &servoId)
 {
-    uint16_t raw = static_cast<uint16_t>(
-        readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_DRIVE_VOLTAGE));
-    int16_t signed_val = static_cast<int16_t>(raw);
+    uint8_t signBit = 10; // BIT10 is the direction bit
+    int16_t PWM_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_DRIVE_VOLTAGE, signBit);
 
-    // std::cout << "PWM ticks " << PWM_ticks << std::endl;
-    std::cout << "Raw hex: 0x"
-            << std::setw(4) << std::setfill('0') << std::hex << std::uppercase << raw
-            << " | Bin: " << std::bitset<16>(raw)
-            << " | int16_t: " << std::dec << signed_val
-            << " | uint16_t: " << raw
-            << std::endl;
+    // std::cout << "Raw hex: 0x"
+    //         << std::setw(4) << std::setfill('0') << std::hex << std::uppercase << PWM_ticks
+    //         << " | Bin: " << std::bitset<16>(PWM_ticks)
+    //         << " | int16_t: " << std::dec << PWM_ticks
+    //         << " | uint16_t: " << PWM_ticks
+    //         << std::endl;
 
     // If 0 is returned, PWM is not read correctly, return and keep old value
-    if (signed_val == -1 || signed_val == -2)
-        return signed_val; // Return the error code
+    if (PWM_ticks == -1 || PWM_ticks == -2)
+        return PWM_ticks; // Return the error code
 
-    double PWM_percentage = 0.1 * signed_val;
+    double PWM_percentage = 0.1 * PWM_ticks;
     currentPWMs_[idToIndex_[servoId]] = PWM_percentage;
+    // std::cout<< "PWM %: "<< std::setprecision(3) << PWM_percentage << std::endl;
     return PWM_percentage;
 }
 
@@ -838,22 +843,50 @@ int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t co
 
     if (rc < 0)
         return -1;
-    switch(signBit)
+    switch(servoType_[idToIndex_[servoId]])
     {
-        case 15:
-            value = static_cast<int16_t>(result[1] +  (result[0] << 8));
-            // Bit 15 is sign
-            signedValue = value & ~0x8000;
-            if (value & 0x8000)
-                signedValue = -signedValue;
-            return signedValue;
-        case 10:
-            value = static_cast<int16_t>(result[0] +  (result[1] << 8));
-            // Bit 10 is sign
-            signedValue = value & ~0x0400;
-            if (value & 0x0400)
-                signedValue = -signedValue;
-            return signedValue;
+        case ServoType::SCS:
+            if (signBit == 15)
+            {
+                value = static_cast<int16_t>((result[0] << 8) + result[1] ); // SCS
+                // Bit 15 is sign
+                signedValue = value & ~0x8000;
+                if (value & 0x8000)
+                    signedValue = -signedValue;
+                return signedValue;
+            }
+            else if (signBit == 10)
+            {
+                value = static_cast<int16_t>((result[0] << 8) + result[1] ); // SCS
+                // Bit 10 is sign
+                signedValue = value & ~0x0400;
+                if (value & 0x0400)
+                    signedValue = -signedValue;
+                return signedValue;
+            }
+            else {return -3;}
+            break;
+        case ServoType::STS:
+            if (signBit == 15)
+            {
+                value = static_cast<int16_t>((result[1] << 8) + result[0]); // STS
+                // Bit 15 is sign
+                signedValue = value & ~0x8000;
+                if (value & 0x8000)
+                    signedValue = -signedValue;
+                return signedValue;
+            }
+            else if (signBit == 10)
+            {
+                value = static_cast<int16_t>((result[1] << 8) + result[0]); // STS
+                // Bit 10 is sign
+                signedValue = value & ~0x0400;
+                if (value & 0x0400)
+                    signedValue = -signedValue;
+                return signedValue;
+            }
+            else {return -3;}
+            break;
         default:
             return -2;
     }
