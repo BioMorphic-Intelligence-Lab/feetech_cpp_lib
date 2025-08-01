@@ -191,7 +191,8 @@ public:
     bool readAllCurrentPositions();
     bool readAllCurrentSpeeds();
     bool readAllCurrentTemperatures();
-    bool readAllCurrentCurrents(); 
+    bool readAllCurrentCurrents();
+    bool readAllCurrentPWMs();
 
     /// \brief Get current servo position at output.
     /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
@@ -220,6 +221,11 @@ public:
     /// \param[in] servoId ID of the servo
     /// \return Current, in A, -1 on read failure, -2 on servo type failure.
     float readCurrentCurrent(uint8_t const &servoId);
+
+    /// \brief Get current motor driver PWM. Indicative of servo torque.
+    /// \param[in] servoId ID of the servo
+    /// \return PWM in 0.1% duty cycle. Percentage of maximum voltage.
+    double readCurrentPWM(uint8_t const &servoId);
 
     /// \brief Check if the servo is moving
     /// \param[in] servoId ID of the servo
@@ -309,7 +315,7 @@ public:
     /// \param[in] servoId ID of the servo
     /// \param[in] registerId LSB register id.
     /// \return Register value, -1 on read failure, -2 on servo type failure.
-    int16_t readTwouint8_tsRegister(uint8_t const &servoId, uint8_t const &registerId);
+    int16_t readTwouint8_tsRegister(uint8_t const &servoId, uint8_t const &registerId, uint8_t signBit = 15);
 
     /// @brief Sets the target positions for multiple servos simultaneously.
     /// @param[in] NumberOfServos Number of servo.
@@ -343,6 +349,8 @@ public:
     std::vector<double> getCurrentTemperatures();
     
     std::vector<double> getCurrentCurrents();
+
+    std::vector<double> getCurrentPWMs();
 
     // Operating modes
     DriverMode getOperatingMode(uint8_t const &servoId);
@@ -498,6 +506,7 @@ private:
     std::vector<double> currentVelocities_;
     std::vector<double> currentTemperatures_;
     std::vector<double> currentCurrents_;
+    std::vector<double> currentPWMs_;
     std::vector<int16_t> homePositions_; // In ticks at horn
 
     // Servo settings
