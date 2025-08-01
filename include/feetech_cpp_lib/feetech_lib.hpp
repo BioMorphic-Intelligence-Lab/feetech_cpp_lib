@@ -120,6 +120,32 @@ struct DriverSettings
     bool logging = false;
 };
 
+struct ServoData
+{
+    uint8_t servoId; // IDs of servos to control
+    double gearRatio;
+    uint16_t previousHornPosition;
+    int fullRotation;
+
+    // Use pointers because vectors cannot be made atomic
+    std::atomic<double> referencePosition;
+    std::atomic<double> referenceVelocity;
+    std::atomic<double> referenceAcceleration;
+    double currentPosition;
+    double currentVelocity;
+    double currentTemperature;
+    double currentCurrent;
+    int16_t homePosition; // In ticks at horn
+    uint8_t homingMode; // 0 = no homing, 1 = home at start, 2 = home at fixed tick number
+
+    // Servo settings
+    DriverMode operatingMode;
+    double maxSpeed;
+    int direction;
+
+    ServoType servoType; // Map of servo types - STS/SCS servos have slightly different protocol.
+};
+
 /// \brief Driver for STS servos, using UART
 class FeetechServo
 {
@@ -152,13 +178,6 @@ public:
     /// \brief Stop all servos, sets velocity to 0
     /// \return True on success
     bool stopAll();
-
-    /// \brief Change the ID of a servo.
-    /// \note If the desired ID is already taken, this function does nothing and returns false.
-    /// \param[in] oldServoId old servo ID
-    /// \param[in] newServoId new servo ID
-    /// \return True if servo could successfully change ID
-    bool setId(uint8_t const &oldServoId, uint8_t const &newServoId);
 
     /// \brief Change the position offset of a servo.
     /// \param[in] servoId servo ID
@@ -497,32 +516,11 @@ private:
     boost::asio::serial_port* serial_;
 
     std::unique_ptr<BoostTimer> timer_;
-    
-    // Servo data
-    std::vector<uint8_t> servoIds_; // IDs of servos to control
-    std::unordered_map<int, size_t> idToIndex_; // Map of servo IDs to index in servoIds_
-    std::vector<double> gearRatios_;
-    std::vector<uint16_t> previousHornPositions_;
-    std::vector<int> fullRotations_;
 
-    // Use pointers because vectors cannot be made atomic
-    std::vector<std::atomic<double>> referencePositions_;
-    std::vector<std::atomic<double>> referenceVelocities_;
-    std::vector<std::atomic<double>> referenceAccelerations_;
-    std::vector<double> currentPositions_;
-    std::vector<double> currentVelocities_;
-    std::vector<double> currentTemperatures_;
-    std::vector<double> currentCurrents_;
-    std::vector<double> currentPWMs_;
-    std::vector<int16_t> homePositions_; // In ticks at horn
+    // Map of servo IDs to index in servoIds_
+    std::unordered_map<int, size_t> idToIndex_; 
 
-    // Servo settings
-    std::vector<DriverMode> operatingModes_;
-    std::vector<double> maxSpeeds_;
-    std::vector<int> directions_;
-
-    std::vector<ServoType> servoType_; // Map of servo types - STS/SCS servos have slightly different protocol.
-
+    std::vector<ServoData> servoData_;
     DriverSettings settings_;
 
     std::shared_ptr<ServoSerialLogger> logger_;
