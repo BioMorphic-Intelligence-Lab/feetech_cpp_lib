@@ -20,42 +20,45 @@ namespace instruction
     uint8_t const RESET      = 0x06;
 };
 
-FeetechServo::FeetechServo(std::string port, long const &baud, const double frequency, const std::vector<uint8_t>& servo_ids, bool homing, bool logging) : 
+FeetechServo::FeetechServo(std::string port, long const &baud,
+                           const double frequency, const std::vector<uint8_t>& servo_ids,
+                           bool homing, bool logging) : 
     serial_(nullptr), 
-    referencePositions_(servo_ids.size()),
-    referenceVelocities_(servo_ids.size()),
-    referenceAccelerations_(servo_ids.size()),
+    servoData_(servo_ids.size()),
     logger_(nullptr)
     {
-    // Write servo IDs to member data structure
-    servoIds_ = servo_ids;
 
+    // Initialize Driver settings
     settings_.port = port;
     settings_.baud = baud;
     settings_.frequency = frequency;
     settings_.homing = homing;
     settings_.logging = logging;
 
-    for (size_t i = 0; i < servoIds_.size(); ++i) {
-        idToIndex_[servoIds_[i]] = i;
+    for (size_t i = 0; i < servo_ids.size(); ++i) {
+        // Write servo IDs to member data structure
+        servoData_[i].servoId = servo_ids[i];
+        // Setup the map
+        idToIndex_[servo_ids[i]] = i;
 
-        referencePositions_[i].store(0);  // Default constructs std::atomic<double>
-        referenceVelocities_[i].store(0);
-        referenceAccelerations_[i].store(0);
+        servoData_[i].referencePosition.store(0);  // Default constructs std::atomic<double>
+        servoData_[i].referenceVelocity.store(0);
+        servoData_[i].referenceAcceleration.store(0);
         
-        previousHornPositions_.push_back(0.0);
-        fullRotations_.push_back(0);
-        currentPositions_.push_back(0.0);
-        currentVelocities_.push_back(0.0);
-        currentTemperatures_.push_back(0.0);
-        currentCurrents_.push_back(0.0);
-        homePositions_.push_back(0);
+        servoData_[i].previousHornPosition = 0;
+        servoData_[i].fullRotation = 0;
+        servoData_[i].currentPosition = 0.0;
+        servoData_[i].currentVelocity = 0.0;
+        servoData_[i].currentTemperature = 0.0;
+        servoData_[i].currentCurrent = 0.0;
+        servoData_[i].homePosition = 0; // In ticks at horn
+        servoData_[i].homingMode = 0; // Default no homing
 
-        gearRatios_.push_back(1.0); // From horn to output, i.e. if horn:output = 2:1, gear ratio is 2
-        operatingModes_.push_back(DriverMode::CONTINUOUS_POSITION); // Initialize in position mode
-        directions_.push_back(1); // Default direction is 1
-        maxSpeeds_.push_back(5.0); // Observed max speed of servo at gear ratio 1
-        servoType_.push_back(ServoType::UNKNOWN);
+        servoData_[i].gearRatio = 1.0; // From horn to output, i.e. if horn:output = 2:1, gear ratio is 2
+        servoData_[i].operatingMode = DriverMode::CONTINUOUS_POSITION; // Initialize in position mode
+        servoData_[i].direction = 1; // Default direction is 1
+        servoData_[i].maxSpeed = 5.0; // Observed max speed of servo at gear ratio 1
+        servoData_[i].servoType = ServoType::UNKNOWN;
     }
 
     /* Open the serial port for communication */
@@ -98,26 +101,23 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     }
     // Set servos to velocity at velocity 0 and home, set maximum angle to 0 to enable multi-turn
     readAllCurrentPositions();
-    for (size_t i = 0; i < servoIds_.size(); ++i)
+    for (size_t i = 0; i < servoData_.size(); ++i)
     {
         if (homing)
         {
-            writeMaxAngle(servoIds_[i], 0);
-            writeMinAngle(servoIds_[i], 0);
-            resetHomePosition(servoIds_[i]);
+            writeMaxAngle(servoData_[i].servoId, 0);
+            writeMinAngle(servoData_[i].servoId, 0);
+            resetHomePosition(servoData_[i].servoId);
         }
         else
         {
-            setReferencePosition(servoIds_[i], currentPositions_[i]);
+            setReferencePosition(servoData_[i].servoId, servoData_[i].currentPosition);
         }
         
-        writeReturnDelayTime(servoIds_[i], 0);
-        writeTorqueEnable(servoIds_[i], true);
-        writeMode(servoIds_[i], STSMode::STS_POSITION);
-        
+        writeReturnDelayTime(servoData_[i].servoId, 0);
+        writeTorqueEnable(servoData_[i].servoId, true);
+        writeMode(servoData_[i].servoId, STSMode::STS_POSITION);
     }
-
-
     
     std::cout << "Starting timer "<< std::endl;
     timer_ = std::make_unique<BoostTimer>(frequency, std::bind(&FeetechServo::execute, this));
@@ -129,9 +129,9 @@ FeetechServo::~FeetechServo()
     stopAll();
 
     // Set torque disable
-    for (size_t i = 0; i < servoIds_.size(); ++i)
+    for (size_t i = 0; i < servoData_.size(); ++i)
     {
-        writeTorqueEnable(servoIds_[i], false);
+        writeTorqueEnable(servoData_[i].servoId, false);
     }
     
     // Close serial port
@@ -147,25 +147,32 @@ bool FeetechServo::execute()
     if(readAllServoData())
     {
         // Calculate rotational error on servo horn
-        for (size_t i = 0; i < servoIds_.size(); ++i)
+        for (size_t i = 0; i < servoData_.size(); ++i)
         {
             // Position mode
-            if (operatingModes_[i] == DriverMode::CONTINUOUS_POSITION)
+            if (servoData_[i].operatingMode == DriverMode::CONTINUOUS_POSITION)
             {
-                // std::cout<< "[ID: " << static_cast<int>(servoIds_[i])<<"] "<< "Reference position output in rad " << referencePositions_[i].load(std::memory_order_relaxed) << std::endl;
+                // std::cout<< "[ID: " << static_cast<int>(servoData_[i].servoId)<<"] "<< "Reference position output in rad " << referencePositions_[i].load(std::memory_order_relaxed) << std::endl;
 
-                int position = static_cast<int>(directions_[i]* referencePositions_[i].load(std::memory_order_relaxed)*gearRatios_[i]*TICKS_PER_RADIAN + 
-                    homePositions_[i]);
-                writeTargetPosition(servoIds_[i], position, maxSpeeds_[i]*gearRatios_[i]*TICKS_PER_RADIAN);                
-                // std::cout << "[ID: " << static_cast<int>(servoIds_[i])<<"] "<< "Wrote target position as ticks: " << position << std::endl;
+                int position = static_cast<int>(servoData_[i].direction * 
+                    servoData_[i].referencePosition.load(std::memory_order_relaxed) * 
+                    servoData_[i].gearRatio * 
+                    TICKS_PER_RADIAN + servoData_[i].homePosition);
+                writeTargetPosition(
+                    servoData_[i].servoId,
+                    position,
+                    servoData_[i].maxSpeed * servoData_[i].gearRatio * TICKS_PER_RADIAN
+                );                
+                // std::cout << "[ID: " << static_cast<int>(servoData_[i].servoId)<<"] "<< "Wrote target position as ticks: " << position << std::endl;
             }
             // Velocity mode
-            else if (operatingModes_[i] == DriverMode::VELOCITY)
+            else if (servoData_[i].operatingMode == DriverMode::VELOCITY)
             {
                 // Set target velocity
-                double velocity = std::clamp(referenceVelocities_[i].load(std::memory_order_relaxed)*gearRatios_[i],
-                    -maxSpeeds_[i], maxSpeeds_[i]);
-                writeTargetVelocity(servoIds_[i], velocity, false);
+                double velocity = std::clamp(
+                    servoData_[i].referenceVelocity.load(std::memory_order_relaxed) * servoData_[i].gearRatio,
+                    -servoData_[i].maxSpeed, servoData_[i].maxSpeed);
+                writeTargetVelocity(servoData_[i].servoId, velocity, false);
             }
         }
         return true;
@@ -190,9 +197,9 @@ bool FeetechServo::close()
 
 bool FeetechServo::stopAll()
 {
-    for (size_t i = 0; i < servoIds_.size(); ++i)
+    for (size_t i = 0; i < servoData_.size(); ++i)
     {
-        writeTargetVelocity(servoIds_[i], 0, false);
+        writeTargetVelocity(servoData_[i].servoId, 0, false);
     }
     return true;
 }
@@ -239,39 +246,6 @@ bool FeetechServo::readAllServoData()
     return success;
 }
 
-
-bool FeetechServo::setId(uint8_t const &oldServoId, uint8_t const &newServoId)
-{
-    if (servoType_[oldServoId] == ServoType::UNKNOWN)
-    {
-        determineServoType(oldServoId);
-    }
-
-    if (oldServoId >= 0xFE || newServoId >= 0xFE)
-        return false;
-    if (ping(newServoId))
-        return false; // address taken
-
-    unsigned char lockRegister = STSRegisters::WRITE_LOCK;
-    if (servoType_[oldServoId] == ServoType::SCS)
-    {
-        lockRegister = STSRegisters::TORQUE_LIMIT; // On SCS, this has been remapped.
-    }
-    // Unlock EEPROM
-    if (!writeRegister(oldServoId, lockRegister, 0))
-        return false;
-    // Write new ID
-    if (!writeRegister(oldServoId, STSRegisters::ID, newServoId))
-        return false;
-    // Lock EEPROM
-    if (!writeRegister(newServoId, lockRegister, 1))
-        return false;
-    // Update servo type cache.
-    servoType_[newServoId] = servoType_[oldServoId];
-    servoType_[oldServoId] = ServoType::UNKNOWN;
-    return ping(newServoId);
-}
-
 // TODO: Deprecate this function when implementing position based control and more advanced homing
 bool FeetechServo::writePositionOffset(uint8_t const &servoId, int const &positionOffset)
 {
@@ -316,21 +290,21 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
     }
 
     // Handle full rotations
-    if ((absolute_position_ticks - previousHornPositions_[idToIndex_[servoId]]) > 3500)
+    if ((absolute_position_ticks - servoData_[idToIndex_[servoId]].previousHornPosition) > 3500)
     {
-        fullRotations_[idToIndex_[servoId]] = fullRotations_[idToIndex_[servoId]] + directions_[idToIndex_[servoId]];
+        servoData_[idToIndex_[servoId]].fullRotation = servoData_[idToIndex_[servoId]].fullRotation + servoData_[idToIndex_[servoId]].direction;
     }
-    else if ((absolute_position_ticks - previousHornPositions_[idToIndex_[servoId]]) < -3500)
+    else if ((absolute_position_ticks - servoData_[idToIndex_[servoId]].previousHornPosition) < -3500)
     {
-        fullRotations_[idToIndex_[servoId]] = fullRotations_[idToIndex_[servoId]] - directions_[idToIndex_[servoId]];
+        servoData_[idToIndex_[servoId]].fullRotation = servoData_[idToIndex_[servoId]].fullRotation - servoData_[idToIndex_[servoId]].direction;
     }
-    previousHornPositions_[idToIndex_[servoId]] = absolute_position_ticks;
+    servoData_[idToIndex_[servoId]].previousHornPosition = absolute_position_ticks;
 
-    double current_position_rads = (((absolute_position_ticks + fullRotations_[idToIndex_[servoId]]*TICKS_PER_REVOLUTION) - homePositions_[idToIndex_[servoId]]) * RADIANS_PER_TICK) / gearRatios_[idToIndex_[servoId]];
+    double current_position_rads = (((absolute_position_ticks + servoData_[idToIndex_[servoId]].fullRotation * TICKS_PER_REVOLUTION) - servoData_[idToIndex_[servoId]].homePosition) * RADIANS_PER_TICK) / servoData_[idToIndex_[servoId]].gearRatio;
     //std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Full rotations registered: " << fullRotations_[idToIndex_[servoId]] << " revs "<< std::endl;
     //std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
     //std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
-    return currentPositions_[idToIndex_[servoId]] = current_position_rads;
+    return servoData_[idToIndex_[servoId]].currentPosition = current_position_rads;
 }
 
 int16_t FeetechServo::readCurrentPositionTicks(uint8_t const &servoId)
@@ -345,13 +319,13 @@ bool FeetechServo::readAllCurrentPositions()
     double position;
 
     // Loop over servo IDs and read current position
-    for (size_t i = 0; i < servoIds_.size(); ++i)
+    for (size_t i = 0; i < servoData_.size(); ++i)
     {
-        position = readCurrentPosition(servoIds_[i]);
+        position = readCurrentPosition(servoData_[i].servoId);
         // If 0 is returned, position is not read correctly, so return value of function becomes false
         if (position == -1)
         {
-            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoIds_[i])<< "] "<< "[ERROR] Failed to read all positions (pos == -1)" << "\033[0m" << std::endl;
+            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoData_[i].servoId)<< "] "<< "[ERROR] Failed to read all positions (pos == -1)" << "\033[0m" << std::endl;
             ret = false;
         }
     }
@@ -370,8 +344,8 @@ double FeetechServo::readCurrentSpeed(uint8_t const &servoId)
     else if (velocity_ticks == -2)
         return -2;
     
-    double velocity_rads = velocity_ticks*RADIANS_PER_TICK/gearRatios_[idToIndex_[servoId]]*directions_[idToIndex_[servoId]];
-    currentVelocities_[idToIndex_[servoId]] = velocity_rads;
+    double velocity_rads = velocity_ticks * RADIANS_PER_TICK / servoData_[idToIndex_[servoId]].gearRatio * servoData_[idToIndex_[servoId]].direction;
+    servoData_[idToIndex_[servoId]].currentVelocity = velocity_rads;
     return velocity_rads;
 }
 
@@ -381,14 +355,14 @@ bool FeetechServo::readAllCurrentSpeeds()
     double velocity;
 
     // Loop over servo IDs and read current speed
-    for (size_t i = 0; i < servoIds_.size(); ++i)
+    for (size_t i = 0; i < servoData_.size(); ++i)
     {
-        velocity = readCurrentSpeed(servoIds_[i]);
+        velocity = readCurrentSpeed(servoData_[i].servoId);
         // If -1 or -2 is returned, velocity is not read correctly, so return value of function becomes false
         if (velocity == -1 || velocity == -2) // TODO: Do something about the error codes, the velocity can actually be -1 or -2 rad/s, 
         //although this would be very unlikely
         {
-            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoIds_[i])<< "] "<< "[ERROR] Failed to read all speeds (vel == -1 or -2)"  << "\033[0m" << std::endl;
+            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoData_[i].servoId)<< "] "<< "[ERROR] Failed to read all speeds (vel == -1 or -2)"  << "\033[0m" << std::endl;
             ret = false;
         }
     }
@@ -412,7 +386,7 @@ float FeetechServo::readCurrentCurrent(uint8_t const &servoId)
         return current_ticks; // Return the error code
     
     double current_amps = current_ticks*AMPERE_PER_TICK;
-    currentCurrents_[idToIndex_[servoId]] = current_amps;
+    servoData_[idToIndex_[servoId]].currentCurrent = current_amps;
     return current_amps;
 }
 
@@ -421,13 +395,13 @@ bool FeetechServo::readAllCurrentCurrents()
     bool ret = true;
     double current;
     // Loop over servo IDs and read current speed
-    for (size_t i = 0; i < servoIds_.size(); ++i)
+    for (size_t i = 0; i < servoData_.size(); ++i)
     {
-        current = readCurrentCurrent(servoIds_[i]);
+        current = readCurrentCurrent(servoData_[i].servoId);
         // If 0 is returned, velocity is not read correctly, so return value of function becomes false
         if (current == -1 || current == -2)
         {
-            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoIds_[i])<< "] "<< "[ERROR] Failed to read all currents (current == -1 or -2)" << "\033[0m" << std::endl;
+            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoData_[i].servoId)<< "] "<< "[ERROR] Failed to read all currents (current == -1 or -2)" << "\033[0m" << std::endl;
             ret = false;
         }
     }
@@ -454,7 +428,7 @@ bool FeetechServo::writeTargetPosition(uint8_t const &servoId, int const &positi
 // If passing a double, assumes rad/s
 bool FeetechServo::writeTargetVelocity(uint8_t const &servoId, double const &velocity, bool const &asynchronous)
 {
-    int velocity_ticks = static_cast<int>(velocity * TICKS_PER_RADIAN * gearRatios_[idToIndex_[servoId]]);
+    int velocity_ticks = static_cast<int>(velocity * TICKS_PER_RADIAN * servoData_[idToIndex_[servoId]].gearRatio);
     return writeTwouint8_tsRegister(servoId, STSRegisters::RUNNING_SPEED, velocity_ticks, asynchronous);
 }
 
@@ -470,7 +444,7 @@ bool FeetechServo::writeMode(unsigned char const& servoId, STSMode const& mode)
 
 bool FeetechServo::writeMinAngle(uint8_t const &servoId, double const &minAngle)
 {
-    int minPosition_ticks = static_cast<int>(minAngle * TICKS_PER_RADIAN * gearRatios_[idToIndex_[servoId]]);
+    int minPosition_ticks = static_cast<int>(minAngle * TICKS_PER_RADIAN * servoData_[idToIndex_[servoId]].gearRatio);
     return writeTwouint8_tsRegister(servoId, STSRegisters::MINIMUM_ANGLE, minPosition_ticks);
 }
 
@@ -486,47 +460,67 @@ bool FeetechServo::writeTorqueEnable(uint8_t const &servoId, bool const enable)
 
 void FeetechServo::setReferencePosition(uint8_t const &servoId, double const &position)
 {
-    referencePositions_[idToIndex_[servoId]].store(position, std::memory_order_relaxed);
+    servoData_[idToIndex_[servoId]].referencePosition.store(position, std::memory_order_relaxed);
 }
 
 void FeetechServo::setReferenceVelocity(uint8_t const &servoId, double const &velocity)
 {
-    referenceVelocities_[idToIndex_[servoId]].store(velocity * directions_[idToIndex_[servoId]], std::memory_order_relaxed);
+    servoData_[idToIndex_[servoId]].referenceVelocity.store(velocity * servoData_[idToIndex_[servoId]].direction, std::memory_order_relaxed);
 }
 
 void FeetechServo::setReferenceAcceleration(uint8_t const &servoId, double const &acceleration)
 {
-    referenceAccelerations_[idToIndex_[servoId]].store(acceleration);
+    servoData_[idToIndex_[servoId]].referenceAcceleration.store(acceleration);
 }
 
 std::vector<double> FeetechServo::getCurrentPositions()
 {
-    return currentPositions_;
+    std::vector<double> currentPositions(servoData_.size(), 0);
+    for (size_t i = 0; i < servoData_.size(); ++i)
+    {
+        currentPositions[i] = servoData_[i].currentPosition;
+    }
+    return currentPositions;
 }
 
 std::vector<double> FeetechServo::getCurrentVelocities()
 {
-    return currentVelocities_;
+    std::vector<double> currentVelocities(servoData_.size(), 0);
+    for (size_t i = 0; i < servoData_.size(); ++i)
+    {
+        currentVelocities[i] = servoData_[i].currentVelocity;
+    }
+    return currentVelocities;
 }
 
 std::vector<double> FeetechServo::getCurrentTemperatures()
 {
-    return currentTemperatures_;
+    std::vector<double> currentTemperatures(servoData_.size(), 0);
+    for (size_t i = 0; i < servoData_.size(); ++i)
+    {
+        currentTemperatures[i] = servoData_[i].currentTemperature;
+    }
+    return currentTemperatures;
 }
 
 std::vector<double> FeetechServo::getCurrentCurrents()
 {
-    return currentCurrents_;
+    std::vector<double> currentCurrents(servoData_.size(), 0);
+    for (size_t i = 0; i < servoData_.size(); ++i)
+    {
+        currentCurrents[i] = servoData_[i].currentCurrent;
+    }
+    return currentCurrents;
 }
 
 DriverMode FeetechServo::getOperatingMode(uint8_t const &servoId)
 {
-    return operatingModes_[idToIndex_[servoId]];
+    return servoData_[idToIndex_[servoId]].operatingMode;
 }
 
 void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mode)
 {
-    operatingModes_[idToIndex_[servoId]] = mode;
+    servoData_[idToIndex_[servoId]].operatingMode = mode;
     if (mode == DriverMode::VELOCITY)
     {
         writeMode(servoId, STSMode::STS_VELOCITY);
@@ -551,61 +545,87 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
 
 std::vector<DriverMode> FeetechServo::getOperatingModes()
 {
-    return operatingModes_;
+    std::vector<DriverMode> modes(servoData_.size(), DriverMode::CONTINUOUS_POSITION);
+    for (size_t i = 0; i < servoData_.size(); ++i)
+    {
+        modes[i] = servoData_[i].operatingMode;
+    }
+    return modes;
 }
 
 void FeetechServo::setOperatingModes(std::vector<DriverMode> const &modes)
 {
-    operatingModes_ = modes;
     for (size_t i = 0; i < modes.size(); ++i)
     {
-        setOperatingMode(servoIds_[i], modes[i]);
+        servoData_[i].operatingMode = modes[i];
+        setOperatingMode(servoData_[i].servoId, modes[i]);
     }
 }
 
 double FeetechServo::getGearRatio(uint8_t const &servoId)
 {
-    return gearRatios_[idToIndex_[servoId]];
+    return servoData_[idToIndex_[servoId]].gearRatio;
 }
 
 void FeetechServo::setGearRatio(uint8_t const &servoId, double const &ratio)
 {
-    gearRatios_[idToIndex_[servoId]] = ratio;
+    servoData_[idToIndex_[servoId]].gearRatio = ratio;
 }
 
 std::vector<double> FeetechServo::getGearRatios()
 {
-    return gearRatios_;
+    std::vector<double> ratios(servoData_.size(), 1.0);
+    for (size_t i = 0; i < servoData_.size(); ++i)
+    {
+        ratios[i] = servoData_[i].gearRatio;
+    }
+    return ratios;
 }
 
 void FeetechServo::setGearRatios(std::vector<double> const &ratios)
 {
-    gearRatios_ = ratios;
+    for(size_t i = 0; i < ratios.size(); ++i)
+    {
+        servoData_[i].gearRatio = ratios[i];
+    }
 }
 
 double FeetechServo::getMaxSpeed(uint8_t const &servoId)
 {
-    return maxSpeeds_[idToIndex_[servoId]];
+    return servoData_[idToIndex_[servoId]].maxSpeed;
 }
 
 void FeetechServo::setMaxSpeed(uint8_t const &servoId, double const &speed)
 {
-    maxSpeeds_[idToIndex_[servoId]] = speed;
+    servoData_[idToIndex_[servoId]].maxSpeed = speed;
 }
 
 std::vector<double> FeetechServo::getMaxSpeeds()
 {
-    return maxSpeeds_;
+    std::vector<double> maxSpeeds(servoData_.size(), -1.0); // Negative value to indicate not set
+    for (size_t i = 0; i < servoData_.size(); ++i)
+    {
+        maxSpeeds[i] = servoData_[i].maxSpeed;
+    }
+    return maxSpeeds;
 }
 
 void FeetechServo::setMaxSpeeds(std::vector<double> const &speeds)
 {
-    maxSpeeds_ = speeds;
+    for(size_t i = 0; i < speeds.size(); ++i)
+    {
+        if (speeds[i] < 0)
+        {
+            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoData_[i].servoId)<< "] "<< "[ERROR] Speed must be positive. Keeping old speed." << "\033[0m" << std::endl;
+            continue;
+        }
+        servoData_[i].maxSpeed = speeds[i];
+    }
 }
 
 double FeetechServo::getHomePosition(uint8_t const &servoId)
 {
-    return homePositions_[idToIndex_[servoId]];
+    return servoData_[idToIndex_[servoId]].homePosition;
 }
 
 void FeetechServo::resetHomePosition(uint8_t const &servoId)
@@ -616,27 +636,27 @@ void FeetechServo::resetHomePosition(uint8_t const &servoId)
     // Print setting home position
     std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Setting home position as: " << current_position << std::endl;
     // Assign current position as home
-    homePositions_[idToIndex_[servoId]] = current_position;
-    std::cout << "Home position vector: ";
-    for (const auto& val : homePositions_) {
-        std::cout << val << " ";
-    }
-    std::cout << std::endl;
+    servoData_[idToIndex_[servoId]].homePosition = current_position;
 }
 
 std::vector<int16_t> FeetechServo::getHomePositions()
 {
-    return homePositions_;
+    std::vector<int16_t> homePositions(servoData_.size(), 0);
+    for (size_t i = 0; i < servoData_.size(); ++i)
+    {
+        homePositions[i] = servoData_[i].homePosition;
+    }
+    return homePositions;
 }
 
 void FeetechServo::setHomePositions()
 {
-    for (size_t i = 0; i < servoIds_.size(); ++i)
+    for (size_t i = 0; i < servoData_.size(); ++i)
     {
-        homePositions_[i] = currentPositions_[i] + homePositions_[i];
+        servoData_[i].homePosition = servoData_[i].currentPosition + servoData_[i].homePosition;
         // Set reference positions to 
-        referencePositions_[i].store(0.0, std::memory_order_relaxed);
-        currentPositions_[i] = 0.0;
+        servoData_[i].referencePosition.store(0.0, std::memory_order_relaxed);
+        servoData_[i].currentPosition = 0.0;
     }
     // TODO: make current servo data structs atomic because when setting home they can be written by other threads.
     // TODO: Add setting home in servo registers when mode == POSITION  (i.e. not CONTINUOUS_POSITION)
@@ -646,12 +666,12 @@ void FeetechServo::setHomePositions()
 
 void FeetechServo::setHomePosition(uint8_t const &servoId, int16_t ticks)
 {
-    homePositions_[idToIndex_[servoId]] = ticks;
+    servoData_[idToIndex_[servoId]].homePosition = ticks;
 }
 
 int FeetechServo::getVelocityDirection(uint8_t const &servoId)
 {
-    return directions_[idToIndex_[servoId]];
+    return servoData_[idToIndex_[servoId]].direction;
 }
 
 void FeetechServo::setVelocityDirection(uint8_t const &servoId, int const &direction)
@@ -662,15 +682,20 @@ void FeetechServo::setVelocityDirection(uint8_t const &servoId, int const &direc
         return;
     }
     // set direction
-    directions_[idToIndex_[servoId]] = direction;
+    servoData_[idToIndex_[servoId]].direction = direction;
 
     // update reference velocity
-    referenceVelocities_[idToIndex_[servoId]].store(referenceVelocities_[idToIndex_[servoId]].load(std::memory_order_relaxed) * direction, std::memory_order_relaxed);
+    servoData_[idToIndex_[servoId]].referenceVelocity.store(servoData_[idToIndex_[servoId]].referenceVelocity.load(std::memory_order_relaxed) * direction, std::memory_order_relaxed);
 }
 
 std::vector<int> FeetechServo::getVelocityDirections()
 {
-    return directions_;
+    std::vector<int> directions(servoData_.size(), 1); // Default direction is 1
+    for (size_t i = 0; i < servoData_.size(); ++i)
+    {
+        directions[i] = servoData_[i].direction;
+    }
+    return directions;
 }
 
 void FeetechServo::setVelocityDirections(std::vector<int> const &directions)
@@ -679,17 +704,16 @@ void FeetechServo::setVelocityDirections(std::vector<int> const &directions)
     {
         if (directions[i] != 1 && directions[i] != -1)
         {
-            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoIds_[i])<< "] "<< "[ERROR] Direction must be 1 for default and -1 for inverted. Keeping old directions." << "\033[0m" << std::endl;
+            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoData_[i].servoId)<< "] "<< "[ERROR] Direction must be 1 for default and -1 for inverted. Keeping old directions." << "\033[0m" << std::endl;
             return;
         }
+        servoData_[i].direction = directions[i];
     }
-    // set directions
-    directions_ = directions;
 
     // update reference velocities
     for (size_t i = 0; i < directions.size(); ++i)
     {
-        referenceVelocities_[i].store(referenceVelocities_[i].load(std::memory_order_relaxed) * directions[i], std::memory_order_relaxed);
+        servoData_[i].referenceVelocity.store(servoData_[i].referenceVelocity.load(std::memory_order_relaxed) * servoData_[i].direction, std::memory_order_relaxed);
     }
 }
 
@@ -774,7 +798,7 @@ uint8_t FeetechServo::readRegister(uint8_t const &servoId, uint8_t const &regist
 
 int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t const &registerId)
 {
-    if (servoType_[idToIndex_[servoId]] == ServoType::UNKNOWN)
+    if (servoData_[idToIndex_[servoId]].servoType == ServoType::UNKNOWN)
     {
         determineServoType(servoId);
     }
@@ -787,7 +811,7 @@ int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t co
 
     if (rc < 0)
         return -1;
-    switch(servoType_[idToIndex_[servoId]])
+    switch(servoData_[idToIndex_[servoId]].servoType)
     {
         case ServoType::SCS:
             value = static_cast<int16_t>(result[1] +  (result[0] << 8));
@@ -912,13 +936,13 @@ int FeetechServo::receiveMessage(uint8_t const& servoId,
 void FeetechServo::convertIntTouint8_ts(uint8_t const& servoId, int const &value, uint8_t result[2])
 {
     uint16_t servoValue = 0;
-    if (servoType_[idToIndex_[servoId]] == ServoType::UNKNOWN)
+    if (servoData_[idToIndex_[servoId]].servoType == ServoType::UNKNOWN)
     {
         determineServoType(servoId);
     }
 
     // Handle different servo type.
-    switch(servoType_[idToIndex_[servoId]])
+    switch(servoData_[idToIndex_[servoId]].servoType)
     {
         case ServoType::SCS:
             // Little endian ; uint8_t 10 is sign.
@@ -986,9 +1010,9 @@ void FeetechServo::determineServoType(uint8_t const& servoId)
     uint8_t response = readRegister(servoId, STSRegisters::SERVO_MAJOR);
     switch(response)
     {
-        case 10: servoType_[idToIndex_[servoId]] = ServoType::STS; break; // STS3025BL has type 10 for some reason
-        case 9: servoType_[idToIndex_[servoId]] = ServoType::STS; break;
-        case 5: servoType_[idToIndex_[servoId]] = ServoType::SCS; break;
+        case 10: servoData_[idToIndex_[servoId]].servoType = ServoType::STS; break; // STS3025BL has type 10 for some reason
+        case 9: servoData_[idToIndex_[servoId]].servoType = ServoType::STS; break;
+        case 5: servoData_[idToIndex_[servoId]].servoType = ServoType::SCS; break;
     }
 }
 
