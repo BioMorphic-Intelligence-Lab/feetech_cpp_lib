@@ -52,6 +52,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
         servoData_[i].currentVelocity = 0.0;
         servoData_[i].currentTemperature = 0.0;
         servoData_[i].currentCurrent = 0.0;
+        servoData_[i].currentPWM = 0.0;
         servoData_[i].homePosition = 0; // In ticks at horn
         servoData_[i].homingMode = 0; // Default no homing
 
@@ -433,7 +434,7 @@ double FeetechServo::readCurrentPWM(uint8_t const &servoId)
         return PWM_ticks; // Return the error code
 
     double PWM_percentage = 0.1 * PWM_ticks;
-    currentPWMs_[idToIndex_[servoId]] = PWM_percentage;
+    servoData_[idToIndex_[servoId]].currentPWM = PWM_percentage;
     // std::cout<< "PWM %: "<< std::setprecision(3) << PWM_percentage << std::endl;
     return PWM_percentage;
 }
@@ -443,13 +444,13 @@ bool FeetechServo::readAllCurrentPWMs()
     bool ret = true;
     double PWM;
     // Loop over servo IDs and read current speed
-    for (size_t i = 0; i < servoIds_.size(); ++i)
+    for (size_t i = 0; i < servoData_.size(); ++i)
     {
-        PWM = readCurrentPWM(servoIds_[i]);
+        PWM = readCurrentPWM(servoData_[i].servoId);
         // If 0 is returned, velocity is not read correctly, so return value of function becomes false
         if (PWM == -1 || PWM== -2)
         {
-            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoIds_[i])<< "] "<< "[ERROR] Failed to read all PWMs (PWM == -1 or -2)" << "\033[0m" << std::endl;
+            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoData_[i].servoId)<< "] "<< "[ERROR] Failed to read all PWMs (PWM == -1 or -2)" << "\033[0m" << std::endl;
             ret = false;
         }
     }
@@ -563,7 +564,12 @@ std::vector<double> FeetechServo::getCurrentCurrents()
 
 std::vector<double> FeetechServo::getCurrentPWMs()
 {
-    return currentPWMs_;
+    std::vector<double> currentPWMs(servoData_.size(), 0);
+    for (size_t i = 0; i < servoData_.size(); ++i)
+    {
+        currentPWMs[i] = servoData_[i].currentPWM;
+    }
+    return currentPWMs;
 }
 
 DriverMode FeetechServo::getOperatingMode(uint8_t const &servoId)

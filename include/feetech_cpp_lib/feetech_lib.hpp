@@ -135,6 +135,7 @@ struct ServoData
     double currentVelocity;
     double currentTemperature;
     double currentCurrent;
+    double currentPWM;
     int16_t homePosition; // In ticks at horn
     uint8_t homingMode; // 0 = no homing, 1 = home at start, 2 = home at fixed tick number
 
