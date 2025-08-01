@@ -60,15 +60,22 @@ namespace STSRegisters
     uint8_t const RUNNING_SPEED            = 0x2E;
     uint8_t const TORQUE_LIMIT             = 0x30;
     uint8_t const WRITE_LOCK               = 0x37;
-    uint8_t const CURRENT_POSITION         = 0x38;
-    uint8_t const CURRENT_SPEED            = 0x3A;
-    uint8_t const CURRENT_DRIVE_VOLTAGE    = 0x3C;
-    uint8_t const CURRENT_VOLTAGE          = 0x3E;
-    uint8_t const CURRENT_TEMPERATURE      = 0x3F;
-    uint8_t const ASYNCHRONOUS_WRITE_ST    = 0x40;
-    uint8_t const STATUS                   = 0x41;
-    uint8_t const MOVING_STATUS            = 0x42;
-    uint8_t const CURRENT_CURRENT          = 0x45;
+    uint8_t const CURRENT_POSITION         = 0x38; // Read-only
+    uint8_t const CURRENT_SPEED            = 0x3A; // Read-only
+    uint8_t const CURRENT_DRIVE_VOLTAGE    = 0x3C; // Read-only
+    uint8_t const CURRENT_VOLTAGE          = 0x3E; // Read-only
+    uint8_t const CURRENT_TEMPERATURE      = 0x3F; // Read-only
+    uint8_t const ASYNCHRONOUS_WRITE_ST    = 0x40; // Read-only
+    uint8_t const STATUS                   = 0x41; // Read-only
+    uint8_t const MOVING_STATUS            = 0x42; // Read-only
+    uint8_t const CURRENT_CURRENT          = 0x45; // Read-only
+    uint8_t const MOVEMENT_SPEED_THRESHOLD = 0x50; // Read-only
+    uint8_t const DT                       = 0x51; // Read-only
+    uint8_t const SPEED_UNIT_COEFFICIENT   = 0x52; // Read-only
+    uint8_t const HTS                      = 0x53; // Read-only
+    uint8_t const MAXIMUM_SPEED_LIMIT      = 0x54; // Read-only
+    uint8_t const ACCELERATION_LIMIT       = 0x55; // Read-only
+    uint8_t const ACCELERATION_MULTIPLIER  = 0x56; // Read-only
 };
 
 enum DriverMode{
