@@ -87,6 +87,13 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
     bool success=false;
     int fail_counter = 0;
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+    // Populate the previous horn positions before starting to read data
+    for (size_t i = 0; i < servoData_.size(); ++i)
+    {
+        servoData_[i].previousHornPosition = readCurrentPositionTicks(servo_ids[i]);
+    }
+
     for(int i = 0; i<10; i++)
     {
 
@@ -319,10 +326,11 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
     }
 
     double current_position_rads = (
-        (absolute_position_ticks - servoData_[idToIndex_[servoId]].homeTicks) 
+        (absolute_position_ticks - servoData_[idToIndex_[servoId]].homePosition) 
         + servoData_[idToIndex_[servoId]].fullRotation * TICKS_PER_REVOLUTION) * direction
         * RADIANS_PER_TICK / servoData_[idToIndex_[servoId]].gearRatio;
 
+    // Uncomment for debugging ctrl + /
     // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Full rotations registered: " << servoData_[idToIndex_[servoId]].fullRotation << " revs "<< std::endl;
     // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Previous unhomend position ticks: " << servoData_[idToIndex_[servoId]].previousHornPosition << " ticks "<< std::endl;
     // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current unhomend position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
