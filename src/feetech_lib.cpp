@@ -279,6 +279,8 @@ bool FeetechServo::writeReturnDelayTime(uint8_t const &servoId, int const &retur
 double FeetechServo::readCurrentPosition(uint8_t const &servoId)
 {
     int16_t absolute_position_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION);
+    double speed = servoData_[idToIndex_[servoId]].currentVelocity;
+    int direction = servoData_[idToIndex_[servoId]].direction;
 
     // Handle errors
     if (absolute_position_ticks == -1)
@@ -292,22 +294,45 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
         return -2;
     }
 
-    // Handle full rotations
-    if ((absolute_position_ticks - servoData_[idToIndex_[servoId]].previousHornPosition) > 3500)
+    // Note: Magic numbers here have been obtained by trial and error and depend on sampling speed
+    // Note: Velocity is stored in the specified direction, so needs to be 'un-reversed' when comparing to absolute values
+    // Note: Under the hood rotations are always counted in the positive direction, independent of direction setting
+    // If speed is sufficiently negative and the new position is sufficiently larger than the previous position
+    if(speed * direction < -0.25 && absolute_position_ticks > servoData_[idToIndex_[servoId]].previousHornPosition)
     {
-        servoData_[idToIndex_[servoId]].fullRotation = servoData_[idToIndex_[servoId]].fullRotation + servoData_[idToIndex_[servoId]].direction;
+        servoData_[idToIndex_[servoId]].fullRotation--;
     }
-    else if ((absolute_position_ticks - servoData_[idToIndex_[servoId]].previousHornPosition) < -3500)
+    // If speed is sufficiently positive and the new position is sufficiently smaller than the previous position
+    else if(speed * direction > 0.25 && absolute_position_ticks < servoData_[idToIndex_[servoId]].previousHornPosition)
     {
-        servoData_[idToIndex_[servoId]].fullRotation = servoData_[idToIndex_[servoId]].fullRotation - servoData_[idToIndex_[servoId]].direction;
+        servoData_[idToIndex_[servoId]].fullRotation++;
     }
+    // In case of low speed, the difference must be very large
+    else if(abs(speed) <= 0.25 && absolute_position_ticks - servoData_[idToIndex_[servoId]].previousHornPosition > 3500)
+    {
+        servoData_[idToIndex_[servoId]].fullRotation++;
+    }
+    // In case of low speed, new position is much larger 
+    else if(abs(speed) <= 0.25 && absolute_position_ticks - servoData_[idToIndex_[servoId]].previousHornPosition < -3500)
+    {
+        servoData_[idToIndex_[servoId]].fullRotation--;
+    }
+
+    double current_position_rads = (
+        (absolute_position_ticks - servoData_[idToIndex_[servoId]].homeTicks) 
+        + servoData_[idToIndex_[servoId]].fullRotation * TICKS_PER_REVOLUTION) * direction
+        * RADIANS_PER_TICK / servoData_[idToIndex_[servoId]].gearRatio;
+
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Full rotations registered: " << servoData_[idToIndex_[servoId]].fullRotation << " revs "<< std::endl;
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Previous unhomend position ticks: " << servoData_[idToIndex_[servoId]].previousHornPosition << " ticks "<< std::endl;
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current unhomend position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current velocity: " << speed << " ticks "<< std::endl;
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
+    servoData_[idToIndex_[servoId]].currentPosition = current_position_rads;
+
     servoData_[idToIndex_[servoId]].previousHornPosition = absolute_position_ticks;
 
-    double current_position_rads = (((absolute_position_ticks + servoData_[idToIndex_[servoId]].fullRotation * TICKS_PER_REVOLUTION) - servoData_[idToIndex_[servoId]].homePosition) * RADIANS_PER_TICK) / servoData_[idToIndex_[servoId]].gearRatio;
-    //std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Full rotations registered: " << fullRotations_[idToIndex_[servoId]] << " revs "<< std::endl;
-    //std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
-    //std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
-    return servoData_[idToIndex_[servoId]].currentPosition = current_position_rads;
+    return servoData_[idToIndex_[servoId]].currentPosition;
 }
 
 int16_t FeetechServo::readCurrentPositionTicks(uint8_t const &servoId)
