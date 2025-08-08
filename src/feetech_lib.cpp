@@ -114,6 +114,8 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
     {
         if (homing)
         {
+            // Set position offset to 0 to omit position shift when switching mode
+            writePositionOffset(servoData_[i].servoId, 0);
             writeMaxAngle(servoData_[i].servoId, 0);
             writeMinAngle(servoData_[i].servoId, 0);
             resetHomePosition(servoData_[i].servoId);
@@ -256,7 +258,6 @@ bool FeetechServo::readAllServoData()
     return success;
 }
 
-// TODO: Deprecate this function when implementing position based control and more advanced homing
 bool FeetechServo::writePositionOffset(uint8_t const &servoId, int const &positionOffset)
 {
     if (!writeRegister(servoId, STSRegisters::WRITE_LOCK, 0))
@@ -305,12 +306,12 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
     // Note: Velocity is stored in the specified direction, so needs to be 'un-reversed' when comparing to absolute values
     // Note: Under the hood rotations are always counted in the positive direction, independent of direction setting
     // If speed is sufficiently negative and the new position is sufficiently larger than the previous position
-    if(speed * direction < -0.25 && absolute_position_ticks > servoData_[idToIndex_[servoId]].previousHornPosition)
+    if(speed * direction < -0.25 && absolute_position_ticks > servoData_[idToIndex_[servoId]].previousHornPosition + 5)
     {
         servoData_[idToIndex_[servoId]].fullRotation--;
     }
     // If speed is sufficiently positive and the new position is sufficiently smaller than the previous position
-    else if(speed * direction > 0.25 && absolute_position_ticks < servoData_[idToIndex_[servoId]].previousHornPosition)
+    else if(speed * direction > 0.25 && absolute_position_ticks + 5 < servoData_[idToIndex_[servoId]].previousHornPosition)
     {
         servoData_[idToIndex_[servoId]].fullRotation++;
     }
@@ -332,8 +333,8 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
 
     // Uncomment for debugging ctrl + /
     // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Full rotations registered: " << servoData_[idToIndex_[servoId]].fullRotation << " revs "<< std::endl;
-    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Previous unhomend position ticks: " << servoData_[idToIndex_[servoId]].previousHornPosition << " ticks "<< std::endl;
-    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current unhomend position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Previous absolute position ticks: " << servoData_[idToIndex_[servoId]].previousHornPosition << " ticks "<< std::endl;
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current absolute position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
     // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current velocity: " << speed << " ticks "<< std::endl;
     // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
     servoData_[idToIndex_[servoId]].currentPosition = current_position_rads;
@@ -612,16 +613,37 @@ DriverMode FeetechServo::getOperatingMode(uint8_t const &servoId)
 
 void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mode)
 {
-    servoData_[idToIndex_[servoId]].operatingMode = mode;
+    int index = idToIndex_[servoId];
+    servoData_[index].operatingMode = mode;
+    std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Setting mode as: " << mode << std::endl;
+
     if (mode == DriverMode::VELOCITY)
     {
+        // First set zero velocity on the servo
+        writeTargetVelocity(servoId, 0.0);
+        setReferenceVelocity(servoId, 0.0);
         writeMode(servoId, STSMode::STS_VELOCITY);
     }
     else if (mode == DriverMode::CONTINUOUS_POSITION)
     {
-        writeMode(servoId, STSMode::STS_POSITION);
-        writeMinAngle(servoId, 0); // Set min angle to 0 to dusable multi-turn
-        writeMaxAngle(servoId, 0); // Set max angle to 0 to enable multi-turn       
+        // First set a suitable target position on the servo
+        int position = static_cast<int>(servoData_[index].direction * 
+            servoData_[index].currentPosition * 
+            servoData_[index].gearRatio * 
+            TICKS_PER_RADIAN + servoData_[index].homePosition);
+        bool res = writeTargetPosition(servoId, 
+            position,
+            servoData_[index].maxSpeed * servoData_[index].gearRatio * TICKS_PER_RADIAN);
+        setReferencePosition(servoId, servoData_[index].currentPosition);
+        // Switch mode
+        if (res)
+        {
+            writeMode(servoId, STSMode::STS_POSITION);
+            writeMinAngle(servoId, 0); // Set min angle to 0 to dusable multi-turn
+            writeMaxAngle(servoId, 0); // Set max angle to 0 to enable multi-turn
+            std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Setting target position as: " << servoData_[index].currentPosition << std::endl;
+            std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Current position: " << mode << std::endl;
+        }
     }
     else if (mode == DriverMode::POSITION)
     {
