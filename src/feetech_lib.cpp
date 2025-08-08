@@ -94,7 +94,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
         servoData_[i].previousHornPosition = readCurrentPositionTicks(servo_ids[i]);
     }
 
-    for(int i = 0; i<10; i++)
+    for(int i = 0; i<5; i++)
     {
 
         std::cout<<"Checking servo connections..."<<std::endl;
@@ -109,7 +109,6 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
         }
     }
     // Set servos to velocity at velocity 0 and home, set maximum angle to 0 to enable multi-turn
-    readAllCurrentPositions();
     for (size_t i = 0; i < servoData_.size(); ++i)
     {
         if (homing)
@@ -119,6 +118,9 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
             writeMaxAngle(servoData_[i].servoId, 0);
             writeMinAngle(servoData_[i].servoId, 0);
             resetHomePosition(servoData_[i].servoId);
+            while(readCurrentPosition(servoData_[i].servoId)<0); // Make sure you have a good position reading
+            writeTargetPosition(servoData_[i].servoId, servoData_[i].homePosition);
+            setReferencePosition(servoData_[i].servoId, 0.0);
         }
         else
         {
@@ -615,7 +617,6 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
 {
     int index = idToIndex_[servoId];
     servoData_[index].operatingMode = mode;
-    std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Setting mode as: " << mode << std::endl;
 
     if (mode == DriverMode::VELOCITY)
     {
@@ -631,6 +632,9 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
             servoData_[index].currentPosition * 
             servoData_[index].gearRatio * 
             TICKS_PER_RADIAN + servoData_[index].homePosition);
+        // std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Current target position ticks: " << position << std::endl;
+        // std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Current position as: " << servoData_[index].currentPosition << " rad" << std::endl;
+        // std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Current home position ticks: " << servoData_[index].homePosition << std::endl;
         bool res = writeTargetPosition(servoId, 
             position,
             servoData_[index].maxSpeed * servoData_[index].gearRatio * TICKS_PER_RADIAN);
@@ -641,8 +645,7 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
             writeMode(servoId, STSMode::STS_POSITION);
             writeMinAngle(servoId, 0); // Set min angle to 0 to dusable multi-turn
             writeMaxAngle(servoId, 0); // Set max angle to 0 to enable multi-turn
-            std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Setting target position as: " << servoData_[index].currentPosition << std::endl;
-            std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Current position: " << mode << std::endl;
+            std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode succesfully set to: " << mode << std::endl;
         }
     }
     else if (mode == DriverMode::POSITION)
@@ -752,8 +755,17 @@ void FeetechServo::resetHomePosition(uint8_t const &servoId)
     }
     // Print setting home position
     std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Setting home position as: " << current_position << std::endl;
+
     // Assign current position as home
     servoData_[idToIndex_[servoId]].homePosition = current_position;
+
+    // Update servo position with new home
+    double current_position_rads = (
+        (current_position - servoData_[idToIndex_[servoId]].homePosition) 
+        + servoData_[idToIndex_[servoId]].fullRotation * TICKS_PER_REVOLUTION) * servoData_[idToIndex_[servoId]].direction
+        * RADIANS_PER_TICK / servoData_[idToIndex_[servoId]].gearRatio;
+
+    servoData_[idToIndex_[servoId]].currentPosition = current_position_rads;
 }
 
 std::vector<int16_t> FeetechServo::getHomePositions()
@@ -834,10 +846,10 @@ void FeetechServo::setVelocityDirections(std::vector<int> const &directions)
     }
 }
 
-bool FeetechServo::trigerAction()
+bool FeetechServo::triggerAction(uint8_t const &servoId)
 {
     uint8_t noParam = 0;
-    int send = sendMessage(0xFE, instruction::ACTION, 0, &noParam);
+    int send = sendMessage(servoId, instruction::ACTION, 0, &noParam);
     return send == 6;
 }
 
