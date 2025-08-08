@@ -129,6 +129,8 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
         
         writeReturnDelayTime(servoData_[i].servoId, 0);
         writeTorqueEnable(servoData_[i].servoId, true);
+        writeMode(servoData_[i].servoId, STSMode::STS_POSITION); // Reset mode to reset internal position counter
+        writeMode(servoData_[i].servoId, STSMode::STS_VELOCITY);
         writeMode(servoData_[i].servoId, STSMode::STS_POSITION);
     }
     
@@ -308,12 +310,12 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
     // Note: Velocity is stored in the specified direction, so needs to be 'un-reversed' when comparing to absolute values
     // Note: Under the hood rotations are always counted in the positive direction, independent of direction setting
     // If speed is sufficiently negative and the new position is sufficiently larger than the previous position
-    if(speed * direction < -0.25 && absolute_position_ticks > servoData_[idToIndex_[servoId]].previousHornPosition + 5)
+    if(speed * direction < -0.25 && absolute_position_ticks > servoData_[idToIndex_[servoId]].previousHornPosition + 200)
     {
         servoData_[idToIndex_[servoId]].fullRotation--;
     }
     // If speed is sufficiently positive and the new position is sufficiently smaller than the previous position
-    else if(speed * direction > 0.25 && absolute_position_ticks + 5 < servoData_[idToIndex_[servoId]].previousHornPosition)
+    else if(speed * direction > 0.25 && absolute_position_ticks + 200 < servoData_[idToIndex_[servoId]].previousHornPosition)
     {
         servoData_[idToIndex_[servoId]].fullRotation++;
     }
