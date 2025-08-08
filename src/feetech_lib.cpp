@@ -332,11 +332,11 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
         * RADIANS_PER_TICK / servoData_[idToIndex_[servoId]].gearRatio;
 
     // Uncomment for debugging ctrl + /
-    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Full rotations registered: " << servoData_[idToIndex_[servoId]].fullRotation << " revs "<< std::endl;
-    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Previous absolute position ticks: " << servoData_[idToIndex_[servoId]].previousHornPosition << " ticks "<< std::endl;
-    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current absolute position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
-    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current velocity: " << speed << " ticks "<< std::endl;
-    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
+    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Full rotations registered: " << servoData_[idToIndex_[servoId]].fullRotation << " revs "<< std::endl;
+    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Previous absolute position ticks: " << servoData_[idToIndex_[servoId]].previousHornPosition << " ticks "<< std::endl;
+    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current absolute position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
+    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current velocity: " << speed << " ticks "<< std::endl;
+    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
     servoData_[idToIndex_[servoId]].currentPosition = current_position_rads;
 
     servoData_[idToIndex_[servoId]].previousHornPosition = absolute_position_ticks;
@@ -744,9 +744,12 @@ double FeetechServo::getHomePosition(uint8_t const &servoId)
 
 void FeetechServo::resetHomePosition(uint8_t const &servoId)
 {
-    // Get current position
-    int16_t current_position = readCurrentPositionTicks(servoId);
-
+    // Make sure position is read correctly
+    int16_t current_position = -1;
+    while(current_position < 0)
+    {
+        current_position = readCurrentPositionTicks(servoId);
+    }
     // Print setting home position
     std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Setting home position as: " << current_position << std::endl;
     // Assign current position as home
