@@ -307,8 +307,9 @@ public:
     bool writeTorqueEnable(uint8_t const &servoId, bool const enable);
 
     /// \brief Trigger the action previously stored by an asynchronous write on all servos.
+    /// \param[in] servoId ID of the servo
     /// \return True on success
-    bool trigerAction();
+    bool triggerAction(uint8_t const &servoId);
 
     /// \brief Write to a single uint8_t register.
     /// \param[in] servoId ID of the servo
