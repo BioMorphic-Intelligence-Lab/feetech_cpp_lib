@@ -339,7 +339,7 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
     std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Full rotations registered: " << servoData_[idToIndex_[servoId]].fullRotation << " revs "<< std::endl;
     std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Previous absolute position ticks: " << servoData_[idToIndex_[servoId]].previousHornPosition << " ticks "<< std::endl;
     std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current absolute position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
-    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current velocity: " << speed << " ticks "<< std::endl;
+    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current velocity: " << speed << " rad/s "<< std::endl;
     std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
     servoData_[idToIndex_[servoId]].currentPosition = current_position_rads;
 
@@ -542,6 +542,7 @@ bool FeetechServo::writeMaxAngle(uint8_t const &servoId, int16_t const &maxAngle
 
 bool FeetechServo::writeTorqueEnable(uint8_t const &servoId, bool const enable)
 {
+    std::cout<< "[ID: " << static_cast<int>(servoId) << "]: Writing torque enable " << static_cast<int8_t>(enable) << std::endl;
     return writeRegister(servoId, STSRegisters::TORQUE_SWITCH, static_cast<int8_t>(enable));
 }
 
@@ -647,7 +648,7 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
             writeMode(servoId, STSMode::STS_POSITION);
             writeMinAngle(servoId, 0); // Set min angle to 0 to dusable multi-turn
             writeMaxAngle(servoId, 0); // Set max angle to 0 to enable multi-turn
-            std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode succesfully set to: " << mode << std::endl;
+            std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode succesfully set to continuous position " << mode << std::endl;
         }
     }
     else if (mode == DriverMode::POSITION)
@@ -655,6 +656,7 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
         writeMode(servoId, STSMode::STS_POSITION);
         writeMinAngle(servoId, 0); // Set min angle to 0 to dusable multi-turn
         writeMaxAngle(servoId, 4095); // Set max angle to 4095 to disable multi-turn
+        std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode succesfully set to velocity " << mode << std::endl;
     }
     else
     {
