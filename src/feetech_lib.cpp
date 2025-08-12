@@ -627,6 +627,7 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
         writeTargetVelocity(servoId, 0.0);
         setReferenceVelocity(servoId, 0.0);
         writeMode(servoId, STSMode::STS_VELOCITY);
+        std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode succesfully set to velocity " << mode << std::endl;
     }
     else if (mode == DriverMode::CONTINUOUS_POSITION)
     {
@@ -656,7 +657,7 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
         writeMode(servoId, STSMode::STS_POSITION);
         writeMinAngle(servoId, 0); // Set min angle to 0 to dusable multi-turn
         writeMaxAngle(servoId, 4095); // Set max angle to 4095 to disable multi-turn
-        std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode succesfully set to velocity " << mode << std::endl;
+        std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode succesfully set to position " << mode << std::endl;
     }
     else
     {
