@@ -319,15 +319,15 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
     {
         servoData_[idToIndex_[servoId]].fullRotation++;
     }
-    // In case of low speed, the difference must be very large
+    // In case of low speed, if previous position is small compared to current position the horn went backwards
     else if(abs(speed) <= 0.25 && absolute_position_ticks - servoData_[idToIndex_[servoId]].previousHornPosition > 3500)
     {
-        servoData_[idToIndex_[servoId]].fullRotation++;
+        servoData_[idToIndex_[servoId]].fullRotation--;
     }
-    // In case of low speed, new position is much larger 
+    // In case of low speed, if previosu position is large compared to current position the horn went forwards
     else if(abs(speed) <= 0.25 && absolute_position_ticks - servoData_[idToIndex_[servoId]].previousHornPosition < -3500)
     {
-        servoData_[idToIndex_[servoId]].fullRotation--;
+        servoData_[idToIndex_[servoId]].fullRotation++;
     }
 
     double current_position_rads = (
@@ -336,11 +336,11 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
         * RADIANS_PER_TICK / servoData_[idToIndex_[servoId]].gearRatio;
 
     // Uncomment for debugging ctrl + /
-    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Full rotations registered: " << servoData_[idToIndex_[servoId]].fullRotation << " revs "<< std::endl;
-    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Previous absolute position ticks: " << servoData_[idToIndex_[servoId]].previousHornPosition << " ticks "<< std::endl;
-    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current absolute position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
-    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current velocity: " << speed << " rad/s "<< std::endl;
-    std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Full rotations registered: " << servoData_[idToIndex_[servoId]].fullRotation << " revs "<< std::endl;
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Previous absolute position ticks: " << servoData_[idToIndex_[servoId]].previousHornPosition << " ticks "<< std::endl;
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current absolute position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current velocity: " << speed << " rad/s "<< std::endl;
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
     servoData_[idToIndex_[servoId]].currentPosition = current_position_rads;
 
     servoData_[idToIndex_[servoId]].previousHornPosition = absolute_position_ticks;
