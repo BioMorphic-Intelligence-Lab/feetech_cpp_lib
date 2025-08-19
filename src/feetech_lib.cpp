@@ -185,7 +185,7 @@ bool FeetechServo::execute()
             {
                 // Set target velocity
                 double velocity = std::clamp(
-                    servoData_[i].referenceVelocity.load(std::memory_order_relaxed) * servoData_[i].gearRatio,
+                    servoData_[i].referenceVelocity.load(std::memory_order_relaxed) * servoData_[i].gearRatio * servoData_[i].direction,
                     -servoData_[i].maxSpeed, servoData_[i].maxSpeed);
                 writeTargetVelocity(servoData_[i].servoId, velocity, false);
             }
@@ -627,6 +627,7 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
         writeTargetVelocity(servoId, 0.0);
         setReferenceVelocity(servoId, 0.0);
         writeMode(servoId, STSMode::STS_VELOCITY);
+        writeTargetVelocity(servoId, 0.0);
         std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode succesfully set to velocity " << mode << std::endl;
     }
     else if (mode == DriverMode::CONTINUOUS_POSITION)
