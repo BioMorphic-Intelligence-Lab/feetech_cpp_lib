@@ -185,7 +185,7 @@ bool FeetechServo::execute()
             {
                 // Set target velocity
                 double velocity = std::clamp(
-                    servoData_[i].referenceVelocity.load(std::memory_order_relaxed) * servoData_[i].gearRatio * servoData_[i].direction,
+                    servoData_[i].referenceVelocity.load(std::memory_order_relaxed), // Gear ratio and direction is applied when in writeTargetVelocity
                     -servoData_[i].maxSpeed, servoData_[i].maxSpeed);
                 writeTargetVelocity(servoData_[i].servoId, velocity, false);
             }
@@ -515,7 +515,9 @@ bool FeetechServo::writeTargetPosition(uint8_t const &servoId, int const &positi
 // If passing a double, assumes rad/s
 bool FeetechServo::writeTargetVelocity(uint8_t const &servoId, double const &velocity, bool const &asynchronous)
 {
-    int velocity_ticks = static_cast<int>(velocity * TICKS_PER_RADIAN * servoData_[idToIndex_[servoId]].gearRatio);
+    int velocity_ticks = static_cast<int>(velocity * TICKS_PER_RADIAN * servoData_[idToIndex_[servoId]].gearRatio * servoData_[idToIndex_[servoId]].direction);
+    
+    // std::cout << "[ID: " << static_cast<int>(servoId)<<"] "<< "Writing target position: " << position << std::endl;
     return writeTwouint8_tsRegister(servoId, STSRegisters::RUNNING_SPEED, velocity_ticks, asynchronous);
 }
 
@@ -553,7 +555,7 @@ void FeetechServo::setReferencePosition(uint8_t const &servoId, double const &po
 
 void FeetechServo::setReferenceVelocity(uint8_t const &servoId, double const &velocity)
 {
-    servoData_[idToIndex_[servoId]].referenceVelocity.store(velocity * servoData_[idToIndex_[servoId]].direction, std::memory_order_relaxed);
+    servoData_[idToIndex_[servoId]].referenceVelocity.store(velocity, std::memory_order_relaxed);
 }
 
 void FeetechServo::setReferenceAcceleration(uint8_t const &servoId, double const &acceleration)
