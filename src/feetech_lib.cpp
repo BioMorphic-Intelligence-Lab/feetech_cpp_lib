@@ -495,6 +495,12 @@ bool FeetechServo::readAllCurrentPWMs()
     return ret;
 }
 
+int8_t FeetechServo::readOperatingMode(uint8_t const &servoId)
+{
+    int8_t mode = readRegister(servoId, STSRegisters::OPERATION_MODE);
+    return mode;
+}
+
 bool FeetechServo::isMoving(uint8_t const &servoId)
 {
     uint8_t const result = readRegister(servoId, STSRegisters::MOVING_STATUS);
@@ -1037,7 +1043,7 @@ int FeetechServo::receiveMessage(uint8_t const& servoId,
     boost::system::error_code read_ec, timer_ec;
     std::size_t bytes_read = 0;
 
-    int serial_timeout_ms = static_cast<int>(settings_.tx_time_per_byte * (readLength + 5) + 25);
+    int serial_timeout_ms = static_cast<int>(settings_.tx_time_per_byte * (readLength + 5) + 1);
 
     boost::asio::steady_timer timer(*io_context_);
     bool read_done = false, timer_expired = false;

@@ -253,6 +253,11 @@ public:
     /// \param[in] servoId ID of the servo
     /// \return PWM in 0.1% duty cycle. Percentage of maximum voltage.
     double readCurrentPWM(uint8_t const &servoId);
+    
+    /// @brief Read the current mode register of the servo
+    /// @param[in] servoId Id of the servo
+    /// @return Mode of the servo
+    int8_t readOperatingMode(uint8_t const &servoId);
 
     /// \brief Check if the servo is moving
     /// \param[in] servoId ID of the servo
