@@ -118,7 +118,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
             writeMaxAngle(servoData_[i].servoId, 0);
             writeMinAngle(servoData_[i].servoId, 0);
             resetHomePosition(servoData_[i].servoId);
-            while(readCurrentPosition(servoData_[i].servoId)<0); // Make sure you have a good position reading
+            readCurrentPosition(servoData_[i].servoId); // Make sure you have a good position reading
             writeTargetPosition(servoData_[i].servoId, servoData_[i].homePosition);
             setReferencePosition(servoData_[i].servoId, 0.0);
         }
@@ -251,14 +251,14 @@ bool FeetechServo::readAllServoData()
     bool success = true;
 
     success &= readAllCurrentPositions();
-    success &= readAllCurrentSpeeds();
-    success &= readAllCurrentCurrents(); 
-    success &= readAllCurrentPWMs();
+    //success &= readAllCurrentSpeeds();
+    //success &= readAllCurrentCurrents(); 
+    //success &= readAllCurrentPWMs();
 
     if (!success)
         // Make error appear in red
-        std::cerr << "\033[31m" << "[ERROR] Failed to read all servo data" << "\033[0m" << std::endl;
-
+        //std::cerr << "\033[31m" << "[ERROR] Failed to read all servo data" << "\033[0m" << std::endl;
+        (void) 0;
     return success;
 }
 
@@ -403,7 +403,7 @@ bool FeetechServo::readAllCurrentSpeeds()
         if (velocity == -1 || velocity == -2) // TODO: Do something about the error codes, the velocity can actually be -1 or -2 rad/s, 
         //although this would be very unlikely
         {
-            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoData_[i].servoId)<< "] "<< "[ERROR] Failed to read all speeds (vel == -1 or -2)"  << "\033[0m" << std::endl;
+            //std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoData_[i].servoId)<< "] "<< "[ERROR] Failed to read all speeds (vel == -1 or -2)"  << "\033[0m" << std::endl;
             ret = false;
         }
     }
@@ -448,7 +448,7 @@ bool FeetechServo::readAllCurrentCurrents()
         // If 0 is returned, velocity is not read correctly, so return value of function becomes false
         if (current == -1 || current == -2)
         {
-            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoData_[i].servoId)<< "] "<< "[ERROR] Failed to read all currents (current == -1 or -2)" << "\033[0m" << std::endl;
+            //std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoData_[i].servoId)<< "] "<< "[ERROR] Failed to read all currents (current == -1 or -2)" << "\033[0m" << std::endl;
             ret = false;
         }
     }
@@ -488,7 +488,7 @@ bool FeetechServo::readAllCurrentPWMs()
         // If 0 is returned, velocity is not read correctly, so return value of function becomes false
         if (PWM == -1 || PWM== -2)
         {
-            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoData_[i].servoId)<< "] "<< "[ERROR] Failed to read all PWMs (PWM == -1 or -2)" << "\033[0m" << std::endl;
+            //std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoData_[i].servoId)<< "] "<< "[ERROR] Failed to read all PWMs (PWM == -1 or -2)" << "\033[0m" << std::endl;
             ret = false;
         }
     }
@@ -890,7 +890,7 @@ int FeetechServo::sendMessage(uint8_t const &servoId,
     // Todo implement message sending via boost (?)
     int ret = this->writeCommand(message.data(), 6 + paramLength);
     // Give time for the message to be processed.
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
     return ret;
 }
 
@@ -1043,7 +1043,7 @@ int FeetechServo::receiveMessage(uint8_t const& servoId,
     boost::system::error_code read_ec, timer_ec;
     std::size_t bytes_read = 0;
 
-    int serial_timeout_ms = static_cast<int>(settings_.tx_time_per_byte * (readLength + 5) + 1);
+    int serial_timeout_ms = static_cast<int>(settings_.tx_time_per_byte * (readLength + 0) + 1);
 
     boost::asio::steady_timer timer(*io_context_);
     bool read_done = false, timer_expired = false;
