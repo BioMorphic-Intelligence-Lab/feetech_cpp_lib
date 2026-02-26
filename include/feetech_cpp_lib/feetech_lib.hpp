@@ -156,7 +156,8 @@ public:
     /// \param baud Baud rate, default 1Mbps
     /// \param frequency Frequency of the servo driver loop, default 250 Hz
     /// \param servoIds IDs of servos to control, default 1
-    FeetechServo(std::string port="/dev/ttyUSB0", long const &baud=1000000, const double frequency=250, const std::vector<uint8_t>& servo_ids = {1}, bool homing=true, bool logging=false);
+    /// \param read_only If true, do not enable torque and do not start the command loop (for passive read-only use)
+    FeetechServo(std::string port="/dev/ttyUSB0", long const &baud=1000000, const double frequency=250, const std::vector<uint8_t>& servo_ids = {1}, bool homing=true, bool logging=false, bool read_only=false);
 
 
     /// \brief Destructor. Close the serial port.

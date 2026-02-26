@@ -24,8 +24,8 @@ namespace instruction
 
 FeetechServo::FeetechServo(std::string port, long const &baud,
                            const double frequency, const std::vector<uint8_t>& servo_ids,
-                           bool homing, bool logging) : 
-    serial_(nullptr), 
+                           bool homing, bool logging, bool read_only) :
+    serial_(nullptr),
     servoData_(servo_ids.size()),
     logger_(nullptr)
     {
@@ -108,6 +108,14 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
             exit(-1);
         }
     }
+    if (read_only)
+    {
+        // Passive/read-only mode: do not enable torque, do not start command loop.
+        // Caller will call readAllServoData() to read positions.
+        std::cout << "FeetechServo: read_only mode - torque disabled, no command loop." << std::endl;
+        return;
+    }
+
     // Set servos to velocity at velocity 0 and home, set maximum angle to 0 to enable multi-turn
     for (size_t i = 0; i < servoData_.size(); ++i)
     {
