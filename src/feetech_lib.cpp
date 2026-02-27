@@ -197,6 +197,11 @@ bool FeetechServo::execute()
                     -servoData_[i].maxSpeed, servoData_[i].maxSpeed);
                 writeTargetVelocity(servoData_[i].servoId, velocity, false);
             }
+            // UNPOWERED: no commands; torque remains disabled, joint state still read above via readAllServoData()
+            else if (servoData_[i].operatingMode == DriverMode::UNPOWERED)
+            {
+                // Nothing to write
+            }
         }
         return true;
     }
@@ -675,6 +680,11 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
         writeMinAngle(servoId, 0); // Set min angle to 0 to dusable multi-turn
         writeMaxAngle(servoId, 4095); // Set max angle to 4095 to disable multi-turn
         std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode succesfully set to position " << mode << std::endl;
+    }
+    else if (mode == DriverMode::UNPOWERED)
+    {
+        writeTorqueEnable(servoId, false);
+        std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode set to UNPOWERED (torque disabled, joint state still read)" << std::endl;
     }
     else
     {

@@ -83,7 +83,8 @@ enum DriverMode{
     VELOCITY = 1,
     PWM = 2,
     STEP = 3,
-    CONTINUOUS_POSITION = 4
+    CONTINUOUS_POSITION = 4,
+    UNPOWERED = 5  ///< Torque disabled; joint state (position, velocity) is still read
 };
 
 enum STSMode{
