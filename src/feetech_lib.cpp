@@ -38,8 +38,9 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
     for (size_t i = 0; i < servoIds_.size(); ++i) {
         idToIndex_[servoIds_[i]] = i;
         
-        proportionalGains_.push_back(3.0);
-        derivativeGains_.push_back(0.0);
+        // PD gains for continuous position mode: moderate P + D to avoid oscillation (high P or noisy velocity + high D can both cause it)
+        proportionalGains_.push_back(1.0);
+        derivativeGains_.push_back(0.5);
         integralGains_.push_back(0.0);
 
         referencePositions_[i].store(0);  // Default constructs std::atomic<double>
