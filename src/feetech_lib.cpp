@@ -288,6 +288,11 @@ bool FeetechServo::writePositionOffset(uint8_t const &servoId, int const &positi
     return true;
 }
 
+bool FeetechServo::readPositionOffset(uint8_t const &servoId, int16_t &positionOffset)
+{
+    return readTwouint8_tsRegister(servoId, STSRegisters::POSITION_CORRECTION, positionOffset);
+}
+
 bool FeetechServo::writeReturnDelayTime(uint8_t const &servoId, int const &returnDelayTime)
 {
     if (!writeRegister(servoId, STSRegisters::WRITE_LOCK, 0))
@@ -304,6 +309,19 @@ bool FeetechServo::writeReturnDelayTime(uint8_t const &servoId, int const &retur
 double FeetechServo::readCurrentPosition(uint8_t const &servoId)
 {
     int16_t absolute_position_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION);
+    if (servoData_[idToIndex_[servoId]].operatingMode==DriverMode::VELOCITY)
+        {
+            // If velocity mode, manually add the position offset back in.
+            absolute_position_ticks -= servoData_[idToIndex_[servoId]].homePosition;
+            if (absolute_position_ticks > 4095)
+            {
+                absolute_position_ticks -= 4095;
+            }
+            else if (absolute_position_ticks < 0)
+            {
+                absolute_position_ticks += 4095;
+            }
+        }
     double speed = servoData_[idToIndex_[servoId]].currentVelocity;
     int direction = servoData_[idToIndex_[servoId]].direction;
 
@@ -644,6 +662,11 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
 
     if (mode == DriverMode::VELOCITY)
     {
+        // Read the current position offset
+        int16_t position_offset;
+        readPositionOffset(servoId, position_offset);
+        servoData_[idToIndex_[servoId]].homePosition = position_offset;
+
         // First set zero velocity on the servo
         writeTargetVelocity(servoId, 0.0);
         setReferenceVelocity(servoId, 0.0);
