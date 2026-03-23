@@ -53,6 +53,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
         servoData_[i].currentTemperature = 0.0;
         servoData_[i].currentCurrent = 0.0;
         servoData_[i].currentPWM = 0.0;
+        servoData_[i].positionOffsetVelocityMode = 0;
         servoData_[i].homePosition = 0; // In ticks at horn
         servoData_[i].homingMode = 0; // Default no homing
 
@@ -173,7 +174,7 @@ bool FeetechServo::execute()
         for (size_t i = 0; i < servoData_.size(); ++i)
         {
             // Position mode
-            if (servoData_[i].operatingMode == DriverMode::CONTINUOUS_POSITION)
+            if (servoData_[i].operatingMode == DriverMode::CONTINUOUS_POSITION || servoData_[i].operatingMode == DriverMode::POSITION)
             {
                 // std::cout<< "[ID: " << static_cast<int>(servoData_[i].servoId)<<"] "<< "Reference position output in rad " << referencePositions_[i].load(std::memory_order_relaxed) << std::endl;
 
@@ -290,7 +291,19 @@ bool FeetechServo::writePositionOffset(uint8_t const &servoId, int const &positi
 
 bool FeetechServo::readPositionOffset(uint8_t const &servoId, int16_t &positionOffset)
 {
-    return readTwouint8_tsRegister(servoId, STSRegisters::POSITION_CORRECTION, positionOffset);
+    positionOffset = readTwouint8_tsRegister(servoId, STSRegisters::POSITION_CORRECTION, 16);
+    if (positionOffset==-1)
+    {
+        return false;
+    }
+    else if (positionOffset==-2)
+    {
+        return false;
+    }
+    else
+    {
+        return true;
+    }
 }
 
 bool FeetechServo::writeReturnDelayTime(uint8_t const &servoId, int const &returnDelayTime)
@@ -312,15 +325,24 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
     if (servoData_[idToIndex_[servoId]].operatingMode==DriverMode::VELOCITY)
         {
             // If velocity mode, manually add the position offset back in.
-            absolute_position_ticks -= servoData_[idToIndex_[servoId]].homePosition;
-            if (absolute_position_ticks > 4095)
+            int16_t offset = servoData_[idToIndex_[servoId]].positionOffsetVelocityMode;
+            if (offset >= 0 && offset <= 2047) 
             {
-                absolute_position_ticks -= 4095;
+                absolute_position_ticks -= offset;
             }
-            else if (absolute_position_ticks < 0)
+            else if (offset >= 2048 && offset <= 4095)
             {
-                absolute_position_ticks += 4095;
+                absolute_position_ticks += (offset-2048);
             }
+            else if (offset >= 4096 && offset <= 6143)
+            {
+                absolute_position_ticks -= (offset-2048);
+            }
+            else if (offset >= 6144 && offset <= 8191)
+            {
+                absolute_position_ticks += (offset-4096);
+            }
+
         }
     double speed = servoData_[idToIndex_[servoId]].currentVelocity;
     int direction = servoData_[idToIndex_[servoId]].direction;
@@ -662,17 +684,23 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
 
     if (mode == DriverMode::VELOCITY)
     {
-        // Read the current position offset
+        // Read the current position offset and add to prevent position jump (firmware only uses offset in position mode)
         int16_t position_offset;
         readPositionOffset(servoId, position_offset);
-        servoData_[idToIndex_[servoId]].homePosition = position_offset;
+        servoData_[idToIndex_[servoId]].positionOffsetVelocityMode = position_offset;
+        // std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Read position offset: " << position_offset << std::endl;
 
+        // uint8_t* bytes = reinterpret_cast<uint8_t*>(&position_offset);
+
+        // std::cout << "[ID: " << static_cast<int>(servoId)<<"] " << "Byte 0: " << static_cast<int>(bytes[0]) << std::endl;
+        // std::cout << "[ID: " << static_cast<int>(servoId)<<"] " << "Byte 1: " << static_cast<int>(bytes[1]) << std::endl;
+        
         // First set zero velocity on the servo
         writeTargetVelocity(servoId, 0.0);
         setReferenceVelocity(servoId, 0.0);
         writeMode(servoId, STSMode::STS_VELOCITY);
         writeTargetVelocity(servoId, 0.0);
-        std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode succesfully set to velocity " << mode << std::endl;
+        std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode succesfully set to VELOCITY " << mode << std::endl;
     }
     else if (mode == DriverMode::CONTINUOUS_POSITION)
     {
@@ -694,7 +722,7 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
             writeMode(servoId, STSMode::STS_POSITION);
             writeMinAngle(servoId, 0); // Set min angle to 0 to dusable multi-turn
             writeMaxAngle(servoId, 0); // Set max angle to 0 to enable multi-turn
-            std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode succesfully set to continuous position " << mode << std::endl;
+            std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode succesfully set to CONTINUOUS_POSITION " << mode << std::endl;
         }
     }
     else if (mode == DriverMode::POSITION)
@@ -702,7 +730,7 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
         writeMode(servoId, STSMode::STS_POSITION);
         writeMinAngle(servoId, 0); // Set min angle to 0 to dusable multi-turn
         writeMaxAngle(servoId, 4095); // Set max angle to 4095 to disable multi-turn
-        std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode succesfully set to position " << mode << std::endl;
+        std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode succesfully set to POSITION " << mode << std::endl;
     }
     else if (mode == DriverMode::UNPOWERED)
     {
@@ -1028,6 +1056,15 @@ int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t co
                     signedValue = -signedValue;
                 return signedValue;
             }
+            else if (signBit == 11)
+            {
+                value = static_cast<int16_t>((result[1] << 8) + result[0]); // STS
+                // Bit 11 is sign
+                signedValue = value & ~0x0800;
+                if (value & 0x0800)
+                    signedValue = -signedValue;
+                return signedValue;
+            }
             else if (signBit == 10)
             {
                 value = static_cast<int16_t>((result[1] << 8) + result[0]); // STS
@@ -1036,6 +1073,11 @@ int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t co
                 if (value & 0x0400)
                     signedValue = -signedValue;
                 return signedValue;
+            }
+            else if (signBit>15)
+            {
+                value = static_cast<int16_t>((result[1] << 8) + result[0]); // STS
+                return value;
             }
             else {return -3;}
             break;
