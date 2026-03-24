@@ -97,7 +97,6 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
 
     for(int i = 0; i<5; i++)
     {
-
         std::cout<<"Checking servo connections..."<<std::endl;
         success = readAllServoData();
         if (!success)
@@ -685,10 +684,13 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
     if (mode == DriverMode::VELOCITY)
     {
         // Read the current position offset and add to prevent position jump (firmware only uses offset in position mode)
-        int16_t position_offset;
-        readPositionOffset(servoId, position_offset);
+        int16_t position_offset =  -1;
+        while(position_offset < 0)
+        {    
+            readPositionOffset(servoId, position_offset);
+        }
         servoData_[idToIndex_[servoId]].positionOffsetVelocityMode = position_offset;
-        // std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Read position offset: " << position_offset << std::endl;
+        std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Read position offset: " << position_offset << std::endl;
 
         // uint8_t* bytes = reinterpret_cast<uint8_t*>(&position_offset);
 
