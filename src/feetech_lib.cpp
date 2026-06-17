@@ -1,5 +1,8 @@
 #include "feetech_lib.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 
 #define TICKS_PER_REVOLUTION 4096
 #define RADIANS_PER_TICK 0.00153398078 // 2 * pi / TICKS_PER_REVOLUTION
@@ -52,6 +55,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
         currentVelocities_.push_back(0.0);
         currentTemperatures_.push_back(0.0);
         currentCurrents_.push_back(0.0);
+        currentLoads_.push_back(0.0);
         homePositions_.push_back(0.0);
 
         gearRatios_.push_back(1.0); // From horn to output, i.e. if horn:output = 2:1, gear ratio is 2
@@ -142,6 +146,17 @@ FeetechServo::~FeetechServo()
 
 bool FeetechServo::execute()
 {
+    bool expected = false;
+    if (!execute_running_.compare_exchange_strong(expected, true))
+    {
+        return false;
+    }
+    struct ExecuteGuard
+    {
+        std::atomic<bool> & flag;
+        ~ExecuteGuard() { flag.store(false, std::memory_order_release); }
+    } guard{execute_running_};
+
     // Update current servo data
     readAllServoData();
 
@@ -235,15 +250,97 @@ bool FeetechServo::readAllServoData()
 {
     bool success = true;
 
-    success &= readAllCurrentPositions();
-    success &= readAllCurrentSpeeds();
-    success &= readAllCurrentCurrents(); 
+    for (size_t i = 0; i < servoIds_.size(); ++i)
+    {
+        if (!readPresentFeedback(servoIds_[i]))
+        {
+            success = false;
+        }
+    }
+
+    success &= readAllCurrentCurrents();
 
     if (!success)
         // Make error appear in red
         std::cerr << "\033[31m" << "[ERROR] Failed to read all servo data" << "\033[0m" << std::endl;
 
     return success;
+}
+
+namespace
+{
+int16_t decodeStsSigned(uint8_t const lo, uint8_t const hi)
+{
+    const int16_t value = static_cast<int16_t>(lo + (hi << 8));
+    int16_t signed_value = value & static_cast<int16_t>(~0x8000);
+    if (value & 0x8000)
+    {
+        signed_value = static_cast<int16_t>(-signed_value);
+    }
+    return signed_value;
+}
+
+int16_t decodeStsLoad(uint8_t const lo, uint8_t const hi)
+{
+    int16_t load = static_cast<int16_t>(lo + (hi << 8));
+    if (load >= (1 << 10))
+    {
+        load = static_cast<int16_t>((1 << 10) - load);
+    }
+    return load;
+}
+
+double decodeStsCurrentAmps(uint8_t const lo, uint8_t const hi)
+{
+    // python-st3215 ReadCurrent: 1 byte at 0x45, mA = raw * 6.5
+    if (lo > 0)
+    {
+        return static_cast<double>(lo) * AMPERE_PER_TICK;
+    }
+    // Feetech SDK read2ByteTxRx path: unsigned 16-bit at 0x45-0x46
+    const uint16_t raw = static_cast<uint16_t>(lo) | (static_cast<uint16_t>(hi) << 8);
+    return static_cast<double>(raw) * AMPERE_PER_TICK;
+}
+}  // namespace
+
+namespace
+{
+constexpr uint8_t kFeedbackBlockLength = 8;  // 0x38 through 0x3F (position .. temperature)
+constexpr double kMaxLoadCounts = 1024.0;
+constexpr double kMaxCurrentAmps = 3.25;  // 500 counts * 6.5 mA
+}  // namespace
+
+bool FeetechServo::readPresentFeedback(uint8_t const & servoId)
+{
+    if (servoType_[idToIndex_[servoId]] == ServoType::UNKNOWN)
+    {
+        determineServoType(servoId);
+    }
+
+    uint8_t buf[kFeedbackBlockLength] = {};
+    const int rc = readRegisters(
+        servoId, STSRegisters::CURRENT_POSITION, kFeedbackBlockLength, buf);
+    if (rc < 0)
+    {
+        return false;
+    }
+
+    const size_t idx = idToIndex_[servoId];
+    const int16_t position_ticks = decodeStsSigned(buf[0], buf[1]);
+    const int16_t velocity_ticks = decodeStsSigned(buf[2], buf[3]);
+    const int16_t load_ticks = decodeStsLoad(buf[4], buf[5]);
+
+    const double absolute_position_rad = position_ticks * RADIANS_PER_TICK;
+    const double position_difference_rad =
+        absolute_position_rad - previousHornPositions_[idx];
+    previousHornPositions_[idx] = absolute_position_rad;
+    currentPositions_[idx] =
+        currentPositions_[idx] + wrap_to_pi(position_difference_rad) / gearRatios_[idx];
+    currentVelocities_[idx] =
+        velocity_ticks * RADIANS_PER_TICK / gearRatios_[idx] * directions_[idx];
+    currentLoads_[idx] = static_cast<double>(load_ticks);
+    currentTemperatures_[idx] = static_cast<double>(buf[7]);
+    return true;
 }
 
 
@@ -367,16 +464,36 @@ int FeetechServo::readCurrentTemperature(uint8_t const &servoId)
 
 float FeetechServo::readCurrentCurrent(uint8_t const &servoId)
 {
-    // Get current in counts
-    int16_t current_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_CURRENT);
+    // Match python-st3215 ReadCurrent: single byte at 0x45 (69 decimal).
+    uint8_t current_byte = 0;
+    const int rc = readRegisters(
+        servoId, STSRegisters::CURRENT_CURRENT, 1, &current_byte);
+    if (rc < 0)
+    {
+        return -1;
+    }
 
-    // If 0 is returned, current is not read correctly, return and keep old value
-    if (current_ticks == -1 || current_ticks == -2)
-        return current_ticks; // Return the error code
-    
-    double current_amps = current_ticks*AMPERE_PER_TICK;
+    const double current_amps = decodeStsCurrentAmps(current_byte, 0);
     currentCurrents_[idToIndex_[servoId]] = current_amps;
-    return current_amps;
+    return static_cast<float>(current_amps);
+}
+
+float FeetechServo::readCurrentLoad(uint8_t const &servoId)
+{
+    int16_t raw = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_LOAD);
+    if (raw == -1 || raw == -2)
+    {
+        return static_cast<float>(raw);
+    }
+
+    int16_t load = raw;
+    if (load >= (1 << 10))
+    {
+        load = static_cast<int16_t>((1 << 10) - load);
+    }
+
+    currentLoads_[idToIndex_[servoId]] = static_cast<double>(load);
+    return static_cast<float>(load);
 }
 
 bool FeetechServo::readAllCurrentCurrents()
@@ -391,6 +508,22 @@ bool FeetechServo::readAllCurrentCurrents()
         if (current == -1 || current == -2)
         {
             std::cerr << "\033[31m" << "[ERROR] Failed to read all currents (current == -1 or -2)" << "\033[0m" << std::endl;
+            ret = false;
+        }
+    }
+    return ret;
+}
+
+bool FeetechServo::readAllCurrentLoads()
+{
+    bool ret = true;
+    for (size_t i = 0; i < servoIds_.size(); ++i)
+    {
+        const float load = readCurrentLoad(servoIds_[i]);
+        if (load == -1 || load == -2)
+        {
+            std::cerr << "\033[31m" << "[ID " << static_cast<int>(servoIds_[i])
+                      << "] [ERROR] Failed to read load" << "\033[0m" << std::endl;
             ret = false;
         }
     }
@@ -463,6 +596,23 @@ std::vector<double> FeetechServo::getCurrentTemperatures()
 std::vector<double> FeetechServo::getCurrentCurrents()
 {
     return currentCurrents_;
+}
+
+std::vector<double> FeetechServo::getStallEffortAmps()
+{
+    std::vector<double> effort(currentCurrents_.size());
+    for (size_t i = 0; i < effort.size(); ++i)
+    {
+        const double load_as_amps =
+            std::abs(currentLoads_[i]) / kMaxLoadCounts * kMaxCurrentAmps;
+        effort[i] = std::max(currentCurrents_[i], load_as_amps);
+    }
+    return effort;
+}
+
+std::vector<double> FeetechServo::getCurrentLoads()
+{
+    return currentLoads_;
 }
 
 DriverMode FeetechServo::getOperatingMode(uint8_t const &servoId)
@@ -675,7 +825,7 @@ bool FeetechServo::trigerAction()
     return send == 6;
 }
 
-int FeetechServo::sendMessage(uint8_t const &servoId,
+int FeetechServo::sendPacketUnlocked(uint8_t const &servoId,
     uint8_t const &commandID,
     uint8_t const &paramLength,
     uint8_t *parameters)
@@ -695,10 +845,21 @@ int FeetechServo::sendMessage(uint8_t const &servoId,
     }
     message[5 + paramLength] = ~checksum;
 
-    // Todo implement message sending via boost (?)
-    int ret = this->writeCommand(message.data(), 6 + paramLength);
-    // Give time for the message to be processed.
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    return this->writeCommand(message.data(), 6 + paramLength);
+}
+
+int FeetechServo::sendMessage(uint8_t const &servoId,
+    uint8_t const &commandID,
+    uint8_t const &paramLength,
+    uint8_t *parameters)
+{
+    std::lock_guard<std::recursive_mutex> lock(serial_mutex_);
+    const int ret = sendPacketUnlocked(servoId, commandID, paramLength, parameters);
+    // EEPROM writes need settling time; high-rate velocity/position commands do not.
+    if (commandID == instruction::WRITE || commandID == instruction::REGWRITE)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
     return ret;
 }
 
@@ -788,22 +949,20 @@ int FeetechServo::readRegisters(uint8_t const &servoId,
                                   uint8_t const &readLength,
                                   uint8_t *outputBuffer)
 {
+    std::lock_guard<std::recursive_mutex> lock(serial_mutex_);
+
     uint8_t readParam[2] = {startRegister, readLength};
-    // Flush read buffer
     int fd = this->serial_->native_handle();
     tcflush(fd, TCIFLUSH);
 
-    // Send read command
-    int send = sendMessage(servoId, instruction::READ, 2, readParam);
-
-    // Failed to send
+    const int send = sendPacketUnlocked(servoId, instruction::READ, 2, readParam);
     if (send != 8)
     {
         return -1;
     }
-    // Read
+
     std::vector<uint8_t> result(readLength + 1);
-    int rd = receiveMessage(servoId, readLength + 1, result.data());
+    const int rd = receiveMessage(servoId, readLength + 1, result.data());
     if (rd < 0)
     {
         return rd;
@@ -924,6 +1083,7 @@ void FeetechServo::writeTargetPositions(uint8_t const &numberOfServos, const uin
                                         const int positions[],
                                         const int speeds[])
 {   
+    std::lock_guard<std::recursive_mutex> lock(serial_mutex_);
     // Check if number of servos is within limits for SYNCWRITE
     if (numberOfServos > 35)
     {

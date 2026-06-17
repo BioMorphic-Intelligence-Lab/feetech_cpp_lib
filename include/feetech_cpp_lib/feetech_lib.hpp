@@ -14,6 +14,7 @@
 #include <chrono>
 #include <thread>
 #include <atomic>
+#include <mutex>
 
 #include "boost_timer.hpp"
 #include "serial_logger.hpp"
@@ -61,6 +62,7 @@ namespace STSRegisters
     uint8_t const WRITE_LOCK               = 0x37;
     uint8_t const CURRENT_POSITION         = 0x38;
     uint8_t const CURRENT_SPEED            = 0x3A;
+    uint8_t const CURRENT_LOAD             = 0x3C;  // Present load / motor duty (misnamed in older docs)
     uint8_t const CURRENT_DRIVE_VOLTAGE    = 0x3C;
     uint8_t const CURRENT_VOLTAGE          = 0x3E;
     uint8_t const CURRENT_TEMPERATURE      = 0x3F;
@@ -177,7 +179,11 @@ public:
     bool readAllCurrentPositions();
     bool readAllCurrentSpeeds();
     bool readAllCurrentTemperatures();
-    bool readAllCurrentCurrents(); 
+    bool readAllCurrentCurrents();
+    bool readAllCurrentLoads();
+
+    /// Read position, speed, and load in one bus transaction (registers 0x38-0x3F).
+    bool readPresentFeedback(uint8_t const &servoId);
 
     /// \brief Get current servo position at output.
     /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
@@ -200,6 +206,9 @@ public:
     /// \param[in] servoId ID of the servo
     /// \return Current, in A, -1 on read failure, -2 on servo type failure.
     float readCurrentCurrent(uint8_t const &servoId);
+
+    /// \brief Get present motor load (PWM duty). Range roughly -1024 to 1023.
+    float readCurrentLoad(uint8_t const &servoId);
 
     /// \brief Check if the servo is moving
     /// \param[in] servoId ID of the servo
@@ -306,6 +315,11 @@ public:
     
     std::vector<double> getCurrentCurrents();
 
+    /// Combined stall signal (A): max(present current, present load scaled to amps).
+    std::vector<double> getStallEffortAmps();
+
+    std::vector<double> getCurrentLoads();
+
     // Operating modes
     DriverMode getOperatingMode(uint8_t const &servoId);
 
@@ -401,6 +415,11 @@ private:
                     uint8_t const &paramLength,
                     uint8_t *parameters);
 
+    int sendPacketUnlocked(uint8_t const &servoId,
+                           uint8_t const &commandID,
+                           uint8_t const &paramLength,
+                           uint8_t *parameters);
+
     /// \brief Recieve a message from a given servo.
     /// \param[in] servoId ID of the servo
     /// \param[in] readLength Message length
@@ -472,6 +491,9 @@ private:
     boost::asio::serial_port* serial_;
 
     std::unique_ptr<BoostTimer> timer_;
+
+    std::recursive_mutex serial_mutex_;
+    std::atomic<bool> execute_running_{false};
     
     // Servo data
     std::vector<uint8_t> servoIds_; // IDs of servos to control
@@ -490,6 +512,7 @@ private:
     std::vector<double> currentVelocities_;
     std::vector<double> currentTemperatures_;
     std::vector<double> currentCurrents_;
+    std::vector<double> currentLoads_;
     std::vector<double> homePositions_;
 
     // Servo settings
