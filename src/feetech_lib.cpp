@@ -2,6 +2,7 @@
 #include <chrono>
 #include <bitset>
 #include <iomanip>
+#include <cstring>
 
 
 #define TICKS_PER_REVOLUTION 4096
@@ -18,8 +19,10 @@ namespace instruction
     uint8_t const WRITE      = 0x03;
     uint8_t const REGWRITE   = 0x04;
     uint8_t const ACTION     = 0x05;
+    uint8_t const SYNCREAD   = 0x82;
     uint8_t const SYNCWRITE  = 0x83;
     uint8_t const RESET      = 0x06;
+    uint8_t const BROADCAST_ID = 0xFE;
 };
 
 FeetechServo::FeetechServo(std::string port, long const &baud,
@@ -36,6 +39,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
     settings_.frequency = frequency;
     settings_.homing = homing;
     settings_.logging = logging;
+    settings_.tx_time_per_byte = 1000.0 / static_cast<double>(baud) * 10.0;
 
     for (size_t i = 0; i < servo_ids.size(); ++i) {
         // Write servo IDs to member data structure
@@ -50,6 +54,7 @@ FeetechServo::FeetechServo(std::string port, long const &baud,
         servoData_[i].fullRotation = 0;
         servoData_[i].currentPosition = 0.0;
         servoData_[i].currentVelocity = 0.0;
+        servoData_[i].commandedVelocity = 0.0;
         servoData_[i].currentTemperature = 0.0;
         servoData_[i].currentCurrent = 0.0;
         servoData_[i].currentPWM = 0.0;
@@ -166,49 +171,93 @@ FeetechServo::~FeetechServo()
 
 bool FeetechServo::execute()
 {
-    // Update current servo data
-    if(readAllServoData())
-    {
-        // Calculate rotational error on servo horn
-        for (size_t i = 0; i < servoData_.size(); ++i)
-        {
-            // Position mode
-            if (servoData_[i].operatingMode == DriverMode::CONTINUOUS_POSITION || servoData_[i].operatingMode == DriverMode::POSITION)
-            {
-                // std::cout<< "[ID: " << static_cast<int>(servoData_[i].servoId)<<"] "<< "Reference position output in rad " << referencePositions_[i].load(std::memory_order_relaxed) << std::endl;
+    // Read state for publishing/estimation. A failed read must NOT prevent the
+    // command write below: the target commands depend only on the references,
+    // not on the read, so skipping writes on a read hiccup only makes motion
+    // (especially velocity-mode) stutter. Read failures affect published state
+    // only.
+    bool read_ok = readAllServoData();
 
-                int position = static_cast<int>(servoData_[i].direction * 
-                    servoData_[i].referencePosition.load(std::memory_order_relaxed) * 
-                    servoData_[i].gearRatio * 
-                    TICKS_PER_RADIAN + servoData_[i].homePosition);
-                writeTargetPosition(
-                    servoData_[i].servoId,
-                    position,
-                    servoData_[i].maxSpeed * servoData_[i].gearRatio * TICKS_PER_RADIAN
-                );                
-                // std::cout << "[ID: " << static_cast<int>(servoData_[i].servoId)<<"] "<< "Wrote target position as ticks: " << position << std::endl;
-            }
-            // Velocity mode
-            else if (servoData_[i].operatingMode == DriverMode::VELOCITY)
-            {
-                // Set target velocity
-                double velocity = std::clamp(
-                    servoData_[i].referenceVelocity.load(std::memory_order_relaxed), // Gear ratio and direction is applied when in writeTargetVelocity
-                    -servoData_[i].maxSpeed, servoData_[i].maxSpeed);
-                writeTargetVelocity(servoData_[i].servoId, velocity, false);
-            }
-            // UNPOWERED: no commands; torque remains disabled, joint state still read above via readAllServoData()
-            else if (servoData_[i].operatingMode == DriverMode::UNPOWERED)
-            {
-                // Nothing to write
-            }
-        }
-        return true;
-    }
-    else
+    // Loop dt for the host-side velocity slew-rate limiter (robust to jitter).
+    double exec_dt = (settings_.frequency > 0.0) ? 1.0 / settings_.frequency : 0.01;
+    auto exec_now = std::chrono::steady_clock::now();
+    if (hasLastExecuteTime_)
     {
-        return false;
+        double measured = std::chrono::duration<double>(exec_now - lastExecuteTime_).count();
+        if (measured > 1e-4 && measured < 0.5)
+            exec_dt = measured;
     }
+    lastExecuteTime_ = exec_now;
+    hasLastExecuteTime_ = true;
+
+    std::vector<uint8_t> pos_ids;
+    std::vector<int> positions;
+    std::vector<int> speeds;
+    std::vector<uint8_t> vel_ids;
+    std::vector<int> velocities;
+
+    for (size_t i = 0; i < servoData_.size(); ++i)
+    {
+        if (servoData_[i].operatingMode == DriverMode::CONTINUOUS_POSITION
+            || servoData_[i].operatingMode == DriverMode::POSITION)
+        {
+            int position = static_cast<int>(servoData_[i].direction *
+                servoData_[i].referencePosition.load(std::memory_order_relaxed) *
+                servoData_[i].gearRatio *
+                TICKS_PER_RADIAN + servoData_[i].homePosition);
+            int speed = static_cast<int>(
+                servoData_[i].maxSpeed * servoData_[i].gearRatio * TICKS_PER_RADIAN);
+
+            pos_ids.push_back(servoData_[i].servoId);
+            positions.push_back(position);
+            speeds.push_back(speed);
+        }
+        else if (servoData_[i].operatingMode == DriverMode::VELOCITY)
+        {
+            double target = std::clamp(
+                servoData_[i].referenceVelocity.load(std::memory_order_relaxed),
+                -servoData_[i].maxSpeed, servoData_[i].maxSpeed);
+
+            // Host-side slew-rate limiting: ramp the commanded velocity toward
+            // the target by at most velocity_slew_rate * dt per cycle. This
+            // removes step discontinuities in the reference (the controller
+            // typically updates slower than this loop) before they reach the
+            // servo, complementing the firmware acceleration ramp.
+            double commanded = target;
+            if (settings_.velocity_slew_rate > 0.0)
+            {
+                double max_step = settings_.velocity_slew_rate * exec_dt;
+                double dv = std::clamp(target - servoData_[i].commandedVelocity,
+                                       -max_step, max_step);
+                commanded = servoData_[i].commandedVelocity + dv;
+            }
+            servoData_[i].commandedVelocity = commanded;
+
+            int velocity_ticks = static_cast<int>(commanded * TICKS_PER_RADIAN
+                * servoData_[i].gearRatio * servoData_[i].direction);
+
+            vel_ids.push_back(servoData_[i].servoId);
+            velocities.push_back(velocity_ticks);
+        }
+    }
+
+    if (!pos_ids.empty())
+    {
+        writeTargetPositions(
+            static_cast<uint8_t>(pos_ids.size()),
+            pos_ids.data(),
+            positions.data(),
+            speeds.data());
+    }
+    if (!vel_ids.empty())
+    {
+        writeTargetVelocities(
+            static_cast<uint8_t>(vel_ids.size()),
+            vel_ids.data(),
+            velocities.data());
+    }
+
+    return read_ok;
 }
 
 bool FeetechServo::close()
@@ -225,20 +274,27 @@ bool FeetechServo::close()
 
 bool FeetechServo::stopAll()
 {
+    if (servoData_.empty())
+        return true;
+
+    std::vector<uint8_t> ids(servoData_.size());
+    std::vector<int> zero_velocities(servoData_.size(), 0);
     for (size_t i = 0; i < servoData_.size(); ++i)
-    {
-        writeTargetVelocity(servoData_[i].servoId, 0, false);
-    }
+        ids[i] = servoData_[i].servoId;
+
+    writeTargetVelocities(static_cast<uint8_t>(ids.size()), ids.data(), zero_velocities.data());
     return true;
 }
 
 bool FeetechServo::ping(uint8_t const &servoId)
 {
+    std::lock_guard<std::mutex> lock(serial_mutex_);
     uint8_t response[1] = {0xFF};
     int send = sendMessage(servoId,
                            instruction::PING_,
                            0,
-                           response);
+                           response,
+                           true);
     // Failed to send
     if (send != 6)
         return false;
@@ -252,6 +308,7 @@ bool FeetechServo::ping(uint8_t const &servoId)
 void FeetechServo::setDriverSettings(const DriverSettings& settings)
 {
     settings_ = settings;
+    settings_.tx_time_per_byte = 1000.0 / static_cast<double>(settings_.baud) * 10.0;
 }
 
 DriverSettings FeetechServo::getDriverSettings() const
@@ -283,6 +340,32 @@ bool FeetechServo::writePositionOffset(uint8_t const &servoId, int const &positi
     if (!writeTwouint8_tsRegister(servoId, STSRegisters::POSITION_CORRECTION, positionOffset))
         return false;
     // Lock EEPROM
+    if (!writeRegister(servoId, STSRegisters::WRITE_LOCK, 1))
+        return false;
+    return true;
+}
+
+bool FeetechServo::writeSpeedPGain(uint8_t const &servoId, uint8_t const &gain)
+{
+    // Speed P gain (0x25) lives in the EEPROM region, so unlock before writing
+    // and re-lock afterwards (same pattern as writePositionOffset).
+    if (!writeRegister(servoId, STSRegisters::WRITE_LOCK, 0))
+        return false;
+    if (!writeRegister(servoId, STSRegisters::SPEED_PROPORTIONAL_GAIN, gain))
+        return false;
+    if (!writeRegister(servoId, STSRegisters::WRITE_LOCK, 1))
+        return false;
+    return true;
+}
+
+bool FeetechServo::writeSpeedIGain(uint8_t const &servoId, uint8_t const &gain)
+{
+    // Speed I gain (0x27) lives in the EEPROM region, so unlock before writing
+    // and re-lock afterwards.
+    if (!writeRegister(servoId, STSRegisters::WRITE_LOCK, 0))
+        return false;
+    if (!writeRegister(servoId, STSRegisters::SPEED_INTEGRAL_GAIN, gain))
+        return false;
     if (!writeRegister(servoId, STSRegisters::WRITE_LOCK, 1))
         return false;
     return true;
@@ -321,32 +404,30 @@ bool FeetechServo::writeReturnDelayTime(uint8_t const &servoId, int const &retur
 double FeetechServo::readCurrentPosition(uint8_t const &servoId)
 {
     int16_t absolute_position_ticks = readTwouint8_tsRegister(servoId, STSRegisters::CURRENT_POSITION);
-    if (servoData_[idToIndex_[servoId]].operatingMode==DriverMode::VELOCITY)
-        {
-            // If velocity mode, manually add the position offset back in.
-            int16_t offset = servoData_[idToIndex_[servoId]].positionOffsetVelocityMode;
-            if (offset >= 0 && offset <= 2047) 
-            {
-                absolute_position_ticks -= offset;
-            }
-            else if (offset >= 2048 && offset <= 4095)
-            {
-                absolute_position_ticks += (offset-2048);
-            }
-            else if (offset >= 4096 && offset <= 6143)
-            {
-                absolute_position_ticks -= (offset-2048);
-            }
-            else if (offset >= 6144 && offset <= 8191)
-            {
-                absolute_position_ticks += (offset-4096);
-            }
+    if (absolute_position_ticks < 0)
+        return absolute_position_ticks;
 
-        }
+    if (servoData_[idToIndex_[servoId]].operatingMode == DriverMode::VELOCITY)
+    {
+        int16_t offset = servoData_[idToIndex_[servoId]].positionOffsetVelocityMode;
+        if (offset >= 0 && offset <= 2047)
+            absolute_position_ticks -= offset;
+        else if (offset >= 2048 && offset <= 4095)
+            absolute_position_ticks += (offset - 2048);
+        else if (offset >= 4096 && offset <= 6143)
+            absolute_position_ticks -= (offset - 2048);
+        else if (offset >= 6144 && offset <= 8191)
+            absolute_position_ticks += (offset - 4096);
+    }
+
+    return updatePositionFromTicks(servoId, absolute_position_ticks);
+}
+
+double FeetechServo::updatePositionFromTicks(uint8_t const &servoId, int16_t absolute_position_ticks)
+{
     double speed = servoData_[idToIndex_[servoId]].currentVelocity;
     int direction = servoData_[idToIndex_[servoId]].direction;
 
-    // Handle errors
     if (absolute_position_ticks == -1)
     {
         std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoId)<< "] "<<"[ERROR] Failed to read current position (pos == -1)" << "\033[0m" << std::endl;
@@ -358,43 +439,21 @@ double FeetechServo::readCurrentPosition(uint8_t const &servoId)
         return -2;
     }
 
-    // Note: Magic numbers here have been obtained by trial and error and depend on sampling speed
-    // Note: Velocity is stored in the specified direction, so needs to be 'un-reversed' when comparing to absolute values
-    // Note: Under the hood rotations are always counted in the positive direction, independent of direction setting
-    // If speed is sufficiently negative and the new position is sufficiently larger than the previous position
-    if(speed * direction < -0.25 && absolute_position_ticks > servoData_[idToIndex_[servoId]].previousHornPosition + 200)
-    {
+    if (speed * direction < -0.25 && absolute_position_ticks > servoData_[idToIndex_[servoId]].previousHornPosition + 200)
         servoData_[idToIndex_[servoId]].fullRotation--;
-    }
-    // If speed is sufficiently positive and the new position is sufficiently smaller than the previous position
-    else if(speed * direction > 0.25 && absolute_position_ticks + 200 < servoData_[idToIndex_[servoId]].previousHornPosition)
-    {
+    else if (speed * direction > 0.25 && absolute_position_ticks + 200 < servoData_[idToIndex_[servoId]].previousHornPosition)
         servoData_[idToIndex_[servoId]].fullRotation++;
-    }
-    // In case of low speed, if previous position is small compared to current position the horn went backwards
-    else if(abs(speed) <= 0.25 && absolute_position_ticks - servoData_[idToIndex_[servoId]].previousHornPosition > 3500)
-    {
+    else if (abs(speed) <= 0.25 && absolute_position_ticks - servoData_[idToIndex_[servoId]].previousHornPosition > 3500)
         servoData_[idToIndex_[servoId]].fullRotation--;
-    }
-    // In case of low speed, if previosu position is large compared to current position the horn went forwards
-    else if(abs(speed) <= 0.25 && absolute_position_ticks - servoData_[idToIndex_[servoId]].previousHornPosition < -3500)
-    {
+    else if (abs(speed) <= 0.25 && absolute_position_ticks - servoData_[idToIndex_[servoId]].previousHornPosition < -3500)
         servoData_[idToIndex_[servoId]].fullRotation++;
-    }
 
     double current_position_rads = (
-        (absolute_position_ticks - servoData_[idToIndex_[servoId]].homePosition) 
+        (absolute_position_ticks - servoData_[idToIndex_[servoId]].homePosition)
         + servoData_[idToIndex_[servoId]].fullRotation * TICKS_PER_REVOLUTION) * direction
         * RADIANS_PER_TICK / servoData_[idToIndex_[servoId]].gearRatio;
 
-    // Uncomment for debugging ctrl + /
-    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Full rotations registered: " << servoData_[idToIndex_[servoId]].fullRotation << " revs "<< std::endl;
-    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Previous absolute position ticks: " << servoData_[idToIndex_[servoId]].previousHornPosition << " ticks "<< std::endl;
-    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current absolute position ticks: " << absolute_position_ticks << " ticks "<< std::endl;
-    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current velocity: " << speed << " rad/s "<< std::endl;
-    // std::cout << "[ID: " << static_cast<int>(servoId)<<"]"<<" Current position: " << current_position_rads << " rads "<< std::endl;
     servoData_[idToIndex_[servoId]].currentPosition = current_position_rads;
-
     servoData_[idToIndex_[servoId]].previousHornPosition = absolute_position_ticks;
 
     return servoData_[idToIndex_[servoId]].currentPosition;
@@ -408,20 +467,112 @@ int16_t FeetechServo::readCurrentPositionTicks(uint8_t const &servoId)
 
 bool FeetechServo::readAllCurrentPositions()
 {
-    bool ret = true;
-    double position;
+    if (servoData_.empty())
+        return true;
 
-    // Loop over servo IDs and read current position
+    std::vector<uint8_t> ids;
+    ids.reserve(servoData_.size());
+    for (const auto &servo : servoData_)
+        ids.push_back(servo.servoId);
+
+    // Read position (0x38), speed (0x3A), load (0x3C) and current (0x45) in a
+    // single SYNC READ transaction. CURRENT_CURRENT sits CURRENT_OFFSET bytes
+    // past CURRENT_POSITION, so reading that contiguous block gives effort for
+    // free. The load register (0x3C) is also inside this block; we use it to
+    // recover the torque direction (see below).
+    const uint8_t LOAD_OFFSET = STSRegisters::CURRENT_DRIVE_VOLTAGE - STSRegisters::CURRENT_POSITION;
+    const uint8_t CURRENT_OFFSET = STSRegisters::CURRENT_CURRENT - STSRegisters::CURRENT_POSITION;
+    const uint8_t READ_LENGTH = CURRENT_OFFSET + 2;
+
+    std::vector<std::vector<uint8_t>> raw_data;
+    if (!syncReadRegisters(STSRegisters::CURRENT_POSITION, READ_LENGTH, ids, raw_data))
+        return false;
+
+    // Determine the time step for the Kalman filter from the measured loop
+    // period (robust to scheduling jitter), falling back to the nominal period.
+    double dt = (settings_.frequency > 0.0) ? 1.0 / settings_.frequency : 0.01;
+    auto now = std::chrono::steady_clock::now();
+    if (hasLastUpdateTime_)
+    {
+        double measured = std::chrono::duration<double>(now - lastUpdateTime_).count();
+        if (measured > 1e-4 && measured < 0.5)
+            dt = measured;
+    }
+    lastUpdateTime_ = now;
+    hasLastUpdateTime_ = true;
+
+    bool ret = true;
     for (size_t i = 0; i < servoData_.size(); ++i)
     {
-        position = readCurrentPosition(servoData_[i].servoId);
-        // If 0 is returned, position is not read correctly, so return value of function becomes false
-        if (position == -1)
+        uint8_t servoId = servoData_[i].servoId;
+        if (servoData_[i].servoType == ServoType::UNKNOWN)
+            determineServoType(servoId);
+
+        const uint8_t *data = raw_data[i].data();
+        int16_t absolute_position_ticks = decodeTwouint8_ts(data, servoData_[i].servoType, 15);
+        int16_t velocity_ticks = decodeTwouint8_ts(data + 2, servoData_[i].servoType, 15);
+        // Present Current (0x45) is an UNSIGNED magnitude (value x 6.5 mA); it has
+        // no direction bit. The torque direction lives in the Present Load
+        // register (0x3C, bit 10), so we take the magnitude from current and the
+        // sign from load.
+        int16_t current_ticks = decodeTwouint8_ts(data + CURRENT_OFFSET, servoData_[i].servoType, 15);
+        int16_t load_ticks = decodeTwouint8_ts(data + LOAD_OFFSET, servoData_[i].servoType, 10);
+
+        if (absolute_position_ticks < 0)
         {
-            std::cerr << "\033[31m" << "[ID "<< static_cast<int>(servoData_[i].servoId)<< "] "<< "[ERROR] Failed to read all positions (pos == -1)" << "\033[0m" << std::endl;
+            std::cerr << "\033[31m" << "[ID " << static_cast<int>(servoId) << "] "
+                      << "[ERROR] Failed to read all positions" << "\033[0m" << std::endl;
             ret = false;
+            continue;
+        }
+
+        // Velocity is signed; store it directly (the sign carries direction).
+        // This raw value is also consumed by updatePositionFromTicks() for
+        // multi-turn wrap detection, so it must be set before that call.
+        double v_meas = velocity_ticks * RADIANS_PER_TICK
+            / servoData_[i].gearRatio * servoData_[i].direction;
+        servoData_[i].currentVelocity = v_meas;
+
+        // Combine unsigned current magnitude with the load direction bit and the
+        // servo's mounting direction so effort sign matches the joint convention.
+        int current_magnitude = (current_ticks < 0) ? -current_ticks : current_ticks;
+        double current_sign = (load_ticks < 0) ? -1.0 : 1.0;
+        servoData_[i].currentCurrent = current_sign * current_magnitude
+            * AMPERE_PER_TICK * servoData_[i].direction;
+
+        if (servoData_[i].operatingMode == DriverMode::VELOCITY)
+        {
+            int16_t offset = servoData_[i].positionOffsetVelocityMode;
+            if (offset >= 0 && offset <= 2047)
+                absolute_position_ticks -= offset;
+            else if (offset >= 2048 && offset <= 4095)
+                absolute_position_ticks += (offset - 2048);
+            else if (offset >= 4096 && offset <= 6143)
+                absolute_position_ticks -= (offset - 2048);
+            else if (offset >= 6144 && offset <= 8191)
+                absolute_position_ticks += (offset - 4096);
+        }
+
+        double p_meas = updatePositionFromTicks(servoId, absolute_position_ticks);
+        if (p_meas == -1)
+        {
+            ret = false;
+            continue;
+        }
+
+        // Fuse the (precise) position and (noisy) velocity measurements with a
+        // Kalman filter so the published joint state is the smoothed estimate.
+        if (settings_.ekf_enabled)
+        {
+            servoData_[i].kf.update(p_meas, v_meas, dt,
+                                    settings_.ekf_accel_noise,
+                                    settings_.ekf_pos_noise,
+                                    settings_.ekf_vel_noise);
+            servoData_[i].currentPosition = servoData_[i].kf.position();
+            servoData_[i].currentVelocity = servoData_[i].kf.velocity();
         }
     }
+
     return ret;
 }
 
@@ -700,8 +851,15 @@ void FeetechServo::setOperatingMode(uint8_t const &servoId, DriverMode const &mo
         // First set zero velocity on the servo
         writeTargetVelocity(servoId, 0.0);
         setReferenceVelocity(servoId, 0.0);
+        servoData_[index].commandedVelocity = 0.0; // reset slew-limiter state
         writeMode(servoId, STSMode::STS_VELOCITY);
+        // Configure the firmware acceleration ramp so speed changes are not
+        // applied abruptly (the main source of rugged velocity-mode motion).
+        writeTargetAcceleration(servoId, settings_.velocity_acceleration);
         writeTargetVelocity(servoId, 0.0);
+        // Apply the velocity-mode speed-loop gains.
+        writeSpeedPGain(servoId, settings_.velocity_speed_p);
+        writeSpeedIGain(servoId, settings_.velocity_speed_i);
         std::cout<< "[ID: " << static_cast<int>(servoId)<<"] " << "Mode succesfully set to VELOCITY " << mode << std::endl;
     }
     else if (mode == DriverMode::CONTINUOUS_POSITION)
@@ -933,15 +1091,17 @@ void FeetechServo::setVelocityDirections(std::vector<int> const &directions)
 
 bool FeetechServo::triggerAction(uint8_t const &servoId)
 {
+    std::lock_guard<std::mutex> lock(serial_mutex_);
     uint8_t noParam = 0;
-    int send = sendMessage(servoId, instruction::ACTION, 0, &noParam);
+    int send = sendMessage(servoId, instruction::ACTION, 0, &noParam, false);
     return send == 6;
 }
 
 int FeetechServo::sendMessage(uint8_t const &servoId,
     uint8_t const &commandID,
     uint8_t const &paramLength,
-    uint8_t *parameters)
+    uint8_t *parameters,
+    bool post_tx_delay)
 {
     std::vector<uint8_t> message(6 + paramLength);
     uint8_t checksum = servoId + paramLength + 2 + commandID;
@@ -958,11 +1118,25 @@ int FeetechServo::sendMessage(uint8_t const &servoId,
     }
     message[5 + paramLength] = ~checksum;
 
-    // Todo implement message sending via boost (?)
     int ret = this->writeCommand(message.data(), 6 + paramLength);
-    // Give time for the message to be processed.
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    if (post_tx_delay)
+        this->postTxDelay(static_cast<int>(message.size()), true);
     return ret;
+}
+
+void FeetechServo::postTxDelay(int packet_bytes, bool wait_for_response) const
+{
+    int delay_us = static_cast<int>(settings_.tx_time_per_byte * packet_bytes * 1000) + 250;
+    if (wait_for_response)
+        delay_us = std::max(delay_us, 1500);
+    if (delay_us > 0)
+        std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+}
+
+int FeetechServo::serialReadTimeoutMs(int response_bytes) const
+{
+    int timeout_ms = static_cast<int>(settings_.tx_time_per_byte * response_bytes + 3);
+    return std::max(timeout_ms, 5);
 }
 
 bool FeetechServo::writeRegisters(uint8_t const &servoId,
@@ -971,6 +1145,7 @@ bool FeetechServo::writeRegisters(uint8_t const &servoId,
                                     uint8_t const *parameters,
                                     bool const &asynchronous)
 {
+    std::lock_guard<std::mutex> lock(serial_mutex_);
     std::vector<uint8_t> param(writeLength + 1);
     param[0] = startRegister;
     for (int i = 0; i < writeLength; i++)
@@ -978,7 +1153,8 @@ bool FeetechServo::writeRegisters(uint8_t const &servoId,
     int rc = sendMessage(servoId,
                          asynchronous ? instruction::REGWRITE : instruction::WRITE,
                          writeLength + 1,
-                         param.data());
+                         param.data(),
+                         false);
     return rc == writeLength + 7;
 }
 
@@ -1010,28 +1186,17 @@ uint8_t FeetechServo::readRegister(uint8_t const &servoId, uint8_t const &regist
     return result;
 }
 
-int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t const &registerId, uint8_t signBit)
+int16_t FeetechServo::decodeTwouint8_ts(const uint8_t result[2], ServoType type, uint8_t signBit)
 {
-    if (servoData_[idToIndex_[servoId]].servoType == ServoType::UNKNOWN)
-    {
-        determineServoType(servoId);
-    }
-
-    unsigned char result[2] = {0, 0};
     int16_t value = 0;
     int16_t signedValue = 0;
 
-    int rc = readRegisters(servoId, registerId, 2, result);
-
-    if (rc < 0)
-        return -1;
-    switch(servoData_[idToIndex_[servoId]].servoType)
+    switch (type)
     {
         case ServoType::SCS:
             if (signBit == 15)
             {
-                value = static_cast<int16_t>((result[0] << 8) + result[1] ); // SCS
-                // Bit 15 is sign
+                value = static_cast<int16_t>((result[0] << 8) + result[1]);
                 signedValue = value & ~0x8000;
                 if (value & 0x8000)
                     signedValue = -signedValue;
@@ -1039,20 +1204,17 @@ int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t co
             }
             else if (signBit == 10)
             {
-                value = static_cast<int16_t>((result[0] << 8) + result[1] ); // SCS
-                // Bit 10 is sign
+                value = static_cast<int16_t>((result[0] << 8) + result[1]);
                 signedValue = value & ~0x0400;
                 if (value & 0x0400)
                     signedValue = -signedValue;
                 return signedValue;
             }
-            else {return -3;}
-            break;
+            return -3;
         case ServoType::STS:
             if (signBit == 15)
             {
-                value = static_cast<int16_t>((result[1] << 8) + result[0]); // STS
-                // Bit 15 is sign
+                value = static_cast<int16_t>((result[1] << 8) + result[0]);
                 signedValue = value & ~0x8000;
                 if (value & 0x8000)
                     signedValue = -signedValue;
@@ -1060,8 +1222,7 @@ int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t co
             }
             else if (signBit == 11)
             {
-                value = static_cast<int16_t>((result[1] << 8) + result[0]); // STS
-                // Bit 11 is sign
+                value = static_cast<int16_t>((result[1] << 8) + result[0]);
                 signedValue = value & ~0x0800;
                 if (value & 0x0800)
                     signedValue = -signedValue;
@@ -1069,23 +1230,92 @@ int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t co
             }
             else if (signBit == 10)
             {
-                value = static_cast<int16_t>((result[1] << 8) + result[0]); // STS
-                // Bit 10 is sign
+                value = static_cast<int16_t>((result[1] << 8) + result[0]);
                 signedValue = value & ~0x0400;
                 if (value & 0x0400)
                     signedValue = -signedValue;
                 return signedValue;
             }
-            else if (signBit>15)
-            {
-                value = static_cast<int16_t>((result[1] << 8) + result[0]); // STS
-                return value;
-            }
-            else {return -3;}
-            break;
+            else if (signBit > 15)
+                return static_cast<int16_t>((result[1] << 8) + result[0]);
+            return -3;
         default:
             return -2;
     }
+}
+
+int16_t FeetechServo::readTwouint8_tsRegister(uint8_t const &servoId, uint8_t const &registerId, uint8_t signBit)
+{
+    if (servoData_[idToIndex_[servoId]].servoType == ServoType::UNKNOWN)
+        determineServoType(servoId);
+
+    unsigned char result[2] = {0, 0};
+    int rc = readRegisters(servoId, registerId, 2, result);
+    if (rc < 0)
+        return -1;
+
+    return decodeTwouint8_ts(result, servoData_[idToIndex_[servoId]].servoType, signBit);
+}
+
+bool FeetechServo::syncReadRegisters(uint8_t const &startRegister,
+                                     uint8_t const &readLength,
+                                     const std::vector<uint8_t> &servoIds,
+                                     std::vector<std::vector<uint8_t>> &output)
+{
+    std::lock_guard<std::mutex> lock(serial_mutex_);
+    if (servoIds.empty())
+    {
+        output.clear();
+        return true;
+    }
+
+    if (servoIds.size() > static_cast<size_t>(settings_.max_servos))
+        return false;
+
+    const uint8_t n = static_cast<uint8_t>(servoIds.size());
+    const uint8_t paramLength = static_cast<uint8_t>(2 + n);
+    std::vector<uint8_t> message(6 + paramLength);
+    uint8_t checksum = instruction::BROADCAST_ID + paramLength + 2 + instruction::SYNCREAD
+        + startRegister + readLength;
+
+    message[0] = 0xFF;
+    message[1] = 0xFF;
+    message[2] = instruction::BROADCAST_ID;
+    message[3] = paramLength + 2;
+    message[4] = instruction::SYNCREAD;
+    message[5] = startRegister;
+    message[6] = readLength;
+    for (uint8_t i = 0; i < n; ++i)
+    {
+        message[7 + i] = servoIds[i];
+        checksum += servoIds[i];
+    }
+    message[5 + paramLength] = static_cast<uint8_t>(~checksum);
+
+    int fd = serial_->native_handle();
+    tcflush(fd, TCIFLUSH);
+
+    int sent = writeCommand(message.data(), static_cast<int>(message.size()));
+    if (sent != static_cast<int>(message.size()))
+        return false;
+
+    postTxDelay(static_cast<int>(message.size()), true);
+
+    output.resize(servoIds.size());
+    std::vector<uint8_t> raw(readLength + 1);
+    const int response_timeout_ms = serialReadTimeoutMs(readLength + 5);
+    for (size_t i = 0; i < servoIds.size(); ++i)
+    {
+        int rd = receiveMessage(servoIds[i], readLength + 1, raw.data(), response_timeout_ms);
+        if (rd < 0)
+            return false;
+
+        output[i].resize(readLength);
+        for (uint8_t j = 0; j < readLength; ++j)
+            output[i][j] = raw[j + 1];
+    }
+
+    return true;
 }
 
 int FeetechServo::readRegisters(uint8_t const &servoId,
@@ -1093,13 +1323,14 @@ int FeetechServo::readRegisters(uint8_t const &servoId,
                                   uint8_t const &readLength,
                                   uint8_t *outputBuffer)
 {
+    std::lock_guard<std::mutex> lock(serial_mutex_);
     uint8_t readParam[2] = {startRegister, readLength};
     // Flush read buffer
     int fd = this->serial_->native_handle();
     tcflush(fd, TCIFLUSH);
 
     // Send read command
-    int send = sendMessage(servoId, instruction::READ, 2, readParam);
+    int send = sendMessage(servoId, instruction::READ, 2, readParam, true);
 
     // Failed to send
     if (send != 8)
@@ -1108,7 +1339,8 @@ int FeetechServo::readRegisters(uint8_t const &servoId,
     }
     // Read
     std::vector<uint8_t> result(readLength + 1);
-    int rd = receiveMessage(servoId, readLength + 1, result.data());
+    int rd = receiveMessage(servoId, readLength + 1, result.data(),
+                            serialReadTimeoutMs(readLength + 5));
     if (rd < 0)
     {
         return rd;
@@ -1122,13 +1354,16 @@ int FeetechServo::readRegisters(uint8_t const &servoId,
 
 int FeetechServo::receiveMessage(uint8_t const& servoId,
                                   uint8_t const& readLength,
-                                  uint8_t *outputBuffer)
+                                  uint8_t *outputBuffer,
+                                  int timeout_ms)
 {
     std::vector<uint8_t> result(readLength + 5);
     boost::system::error_code read_ec, timer_ec;
     std::size_t bytes_read = 0;
 
-    int serial_timeout_ms = static_cast<int>(settings_.tx_time_per_byte * (readLength + 0) + 1);
+    int serial_timeout_ms = timeout_ms > 0
+        ? timeout_ms
+        : serialReadTimeoutMs(readLength + 5);
 
     boost::asio::steady_timer timer(*io_context_);
     bool read_done = false, timer_expired = false;
@@ -1158,7 +1393,6 @@ int FeetechServo::receiveMessage(uint8_t const& servoId,
     io_context_->run();
 
     if (timer_expired) {
-        std::cout << "Timeout while reading serial " << serial_timeout_ms << "ms\n";
         return -1;
     }
 
@@ -1229,6 +1463,7 @@ void FeetechServo::writeTargetPositions(uint8_t const &numberOfServos, const uin
                                         const int positions[],
                                         const int speeds[])
 {   
+    std::lock_guard<std::mutex> lock(serial_mutex_);
     // Check if number of servos is within limits for SYNCWRITE
     if (numberOfServos > 35)
     {
@@ -1236,7 +1471,7 @@ void FeetechServo::writeTargetPositions(uint8_t const &numberOfServos, const uin
         exit(-2);
     }
     uint8_t servoSpace = numberOfServos * 7 + 4;
-    const std::vector<uint8_t> data = {0xFF, 0xFF, 0xFE, servoSpace, instruction::SYNCWRITE, STSRegisters::TARGET_POSITION, 6};
+    const std::vector<uint8_t> data = {0xFF, 0xFF, instruction::BROADCAST_ID, servoSpace, instruction::SYNCWRITE, STSRegisters::TARGET_POSITION, 6};
     size_t ret = this->serial_->write_some(boost::asio::buffer(data, data.size()));
     if (ret != data.size())
     {
@@ -1244,7 +1479,7 @@ void FeetechServo::writeTargetPositions(uint8_t const &numberOfServos, const uin
         exit(-1);
     }
 
-    uint8_t checksum = 0xFE + numberOfServos * 7 + 4 + instruction::SYNCWRITE + STSRegisters::TARGET_POSITION + 6;
+    uint8_t checksum = instruction::BROADCAST_ID + numberOfServos * 7 + 4 + instruction::SYNCWRITE + STSRegisters::TARGET_POSITION + 6;
     uint8_t zeros[2] = {0, 0};
     for (int index = 0; index < numberOfServos; index++)
     {
@@ -1259,6 +1494,38 @@ void FeetechServo::writeTargetPositions(uint8_t const &numberOfServos, const uin
     }
     checksum = ~checksum;
     this->serial_->write_some(boost::asio::buffer(&checksum, 1));
+}
+
+void FeetechServo::writeTargetVelocities(uint8_t const &numberOfServos, const uint8_t servoIds[],
+                                         const int velocities[])
+{
+    std::lock_guard<std::mutex> lock(serial_mutex_);
+    if (numberOfServos > 35)
+    {
+        throw std::invalid_argument("Too many servos to send in one message. Maximum number of servos for SYNCWRITE is 35.");
+    }
+
+    const uint8_t dataLength = 2;
+    const uint8_t servoSpace = numberOfServos * (dataLength + 1) + 4;
+    const std::vector<uint8_t> data = {
+        0xFF, 0xFF, instruction::BROADCAST_ID, servoSpace,
+        instruction::SYNCWRITE, STSRegisters::RUNNING_SPEED, dataLength};
+    size_t ret = serial_->write_some(boost::asio::buffer(data, data.size()));
+    if (ret != data.size())
+        throw std::runtime_error("Failed to write to serial port.");
+
+    uint8_t checksum = instruction::BROADCAST_ID + servoSpace + instruction::SYNCWRITE
+        + STSRegisters::RUNNING_SPEED + dataLength;
+    for (int index = 0; index < numberOfServos; index++)
+    {
+        checksum += servoIds[index];
+        serial_->write_some(boost::asio::buffer(&servoIds[index], 1));
+        uint8_t intAsuint8_t[2];
+        convertIntTouint8_ts(servoIds[index], velocities[index], intAsuint8_t);
+        sendAndUpdateChecksum(intAsuint8_t, checksum);
+    }
+    checksum = static_cast<uint8_t>(~checksum);
+    serial_->write_some(boost::asio::buffer(&checksum, 1));
 }
 
 void FeetechServo::determineServoType(uint8_t const& servoId)

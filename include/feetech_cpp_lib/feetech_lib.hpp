@@ -15,9 +15,12 @@
 #include <thread>
 #include <atomic>
 #include <unordered_map>
+#include <mutex>
+#include <algorithm>
 
 #include "boost_timer.hpp"
 #include "serial_logger.hpp"
+#include "kalman_filter.hpp"
 
 namespace STSRegisters
 {
@@ -116,9 +119,34 @@ struct DriverSettings
     UNITS unit = RAD;
     int max_servos = 35;
     double position_tolerance = 0.01; // rad
-    int tx_time_per_byte = 1000./(float)baud*10; // 10 bits per byte for some overhead
+    double tx_time_per_byte = 0.01; // ms per byte (10 bits/byte), updated from baud in constructor
     bool homing = true;
     bool logging = false;
+
+    // Velocity-mode acceleration ramp written to the servo's TARGET_ACCELERATION
+    // register (0x29). Units are ~100 steps/s^2 per LSB; 0 = instant (no ramp,
+    // jerky). A small non-zero value lets the firmware ramp speed changes so
+    // velocity-mode motion is smoother. ~10 => ~1.5 rad/s^2.
+    uint8_t velocity_acceleration = 1;
+
+    // Host-side velocity slew-rate limit [rad/s^2]. The commanded velocity is
+    // ramped toward the (clamped) reference by at most this rate per cycle,
+    // which removes step discontinuities in the reference before they reach the
+    // servo. <= 0 disables host-side limiting. Works in addition to the
+    // firmware ramp (velocity_acceleration).
+    double velocity_slew_rate = 2.0;
+
+    // Servo speed-loop gains applied when entering velocity mode. Register 0x25
+    // = proportional gain, 0x27 = integral gain (single byte each).
+    uint8_t velocity_speed_p = 50;
+    uint8_t velocity_speed_i = 150;
+
+    // Kalman filter (position/velocity fusion) settings. Published joint states
+    // are the filtered estimates when ekf_enabled is true.
+    bool ekf_enabled = true;
+    double ekf_accel_noise = 100.0; // process noise: accel std dev [rad/s^2]
+    double ekf_pos_noise = 0.001;  // position measurement noise std dev [rad]
+    double ekf_vel_noise = 0.2;   // velocity measurement noise std dev [rad/s]
 };
 
 struct ServoData
@@ -134,6 +162,7 @@ struct ServoData
     std::atomic<double> referenceAcceleration;
     double currentPosition;
     double currentVelocity;
+    double commandedVelocity; // host-side slew-limited velocity command [rad/s]
     double currentTemperature;
     double currentCurrent;
     double currentPWM;
@@ -147,6 +176,8 @@ struct ServoData
     int direction;
 
     ServoType servoType; // Map of servo types - STS/SCS servos have slightly different protocol.
+
+    JointKalman kf; // Fuses position + velocity measurements into smoothed state estimates.
 };
 
 /// \brief Driver for STS servos, using UART
@@ -195,6 +226,18 @@ public:
     /// \param[in] positionOffset new return delay time
     /// \return True if servo could successfully change return delay time
     bool writeReturnDelayTime(uint8_t const &servoId, int const &returnDelayTime);
+
+    /// \brief Set the speed-loop proportional gain (velocity mode, register 0x25).
+    /// \param[in] servoId servo ID
+    /// \param[in] gain new proportional gain
+    /// \return True if the servo acknowledged the write
+    bool writeSpeedPGain(uint8_t const &servoId, uint8_t const &gain);
+
+    /// \brief Set the speed-loop integral gain (velocity mode, register 0x27).
+    /// \param[in] servoId servo ID
+    /// \param[in] gain new integral gain
+    /// \return True if the servo acknowledged the write
+    bool writeSpeedIGain(uint8_t const &servoId, uint8_t const &gain);
 
     /// \brief Read the position offset of a servo.
     /// \param[in] servoId servo ID
@@ -362,6 +405,11 @@ public:
                             const uint8_t servoIds[],
                             const int positions[],
                             const int speeds[]);
+
+    /// @brief Sets the target velocities for multiple servos simultaneously.
+    void writeTargetVelocities(uint8_t const &numberOfServos,
+                               const uint8_t servoIds[],
+                               const int velocities[]);
     
     /// @brief Set the reference position for a servo.
     /// @param[in] servoId ID of the servo
@@ -453,7 +501,21 @@ private:
     int sendMessage(uint8_t const &servoId,
                     uint8_t const &commandID,
                     uint8_t const &paramLength,
-                    uint8_t *parameters);
+                    uint8_t *parameters,
+                    bool post_tx_delay = false);
+
+    void postTxDelay(int packet_bytes, bool wait_for_response = false) const;
+
+    int serialReadTimeoutMs(int response_bytes) const;
+
+    bool syncReadRegisters(uint8_t const &startRegister,
+                           uint8_t const &readLength,
+                           const std::vector<uint8_t> &servoIds,
+                           std::vector<std::vector<uint8_t>> &output);
+
+    int16_t decodeTwouint8_ts(const uint8_t result[2], ServoType type, uint8_t signBit = 15);
+
+    double updatePositionFromTicks(uint8_t const &servoId, int16_t absolute_position_ticks);
 
     /// \brief Recieve a message from a given servo.
     /// \param[in] servoId ID of the servo
@@ -466,7 +528,8 @@ private:
     ///         -3 if invalid checksum
     int receiveMessage(uint8_t const &servoId,
                        uint8_t const &readLength,
-                       uint8_t *outputBuffer);
+                       uint8_t *outputBuffer,
+                       int timeout_ms = 0);
     
     size_t read_bytes(std::vector<char>& buffer, std::size_t bytes_to_read);
 
@@ -532,6 +595,17 @@ private:
 
     std::vector<ServoData> servoData_;
     DriverSettings settings_;
+    mutable std::mutex serial_mutex_;
+
+    // Timestamp of the previous state read, used to compute the actual dt for
+    // the Kalman filter (robust to scheduling jitter).
+    std::chrono::steady_clock::time_point lastUpdateTime_;
+    bool hasLastUpdateTime_ = false;
+
+    // Timestamp of the previous execute() cycle, used to compute dt for the
+    // host-side velocity slew-rate limiter.
+    std::chrono::steady_clock::time_point lastExecuteTime_;
+    bool hasLastExecuteTime_ = false;
 
     std::shared_ptr<ServoSerialLogger> logger_;
 };
