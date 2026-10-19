@@ -135,6 +135,8 @@ FeetechServo::FeetechServo(std::string port, long const &baud, const double freq
 
 FeetechServo::~FeetechServo()
 {
+    // Stop the execute loop so it cannot overwrite the stop command or use a closed port
+    timer_.reset();
     // Set velocity to zero
     stopAll();
     // Close serial port
@@ -200,6 +202,9 @@ bool FeetechServo::execute()
 
 bool FeetechServo::close()
 {
+    // Stop the execute loop before the port goes away
+    timer_.reset();
+    std::lock_guard<std::recursive_mutex> lock(serial_mutex_);
     if (this->serial_ != nullptr)
     {
         this->serial_->close();
@@ -212,6 +217,10 @@ bool FeetechServo::close()
 
 bool FeetechServo::stopAll()
 {
+    if (this->serial_ == nullptr)
+    {
+        return false;
+    }
     for (size_t i = 0; i < servoIds_.size(); ++i)
     {
         writeTargetVelocity(servoIds_[i], 0, false);
